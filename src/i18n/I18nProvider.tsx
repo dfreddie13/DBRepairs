@@ -3,14 +3,14 @@ import ptPT from "./locales/pt-PT.json";
 import en from "./locales/en.json";
 import es from "./locales/es.json";
 import fr from "./locales/fr.json";
-import ro from "./locales/ro.json"; // <-- LINIE NOUĂ: import traducere română
+import ro from "./locales/ro.json";
 
 const dictionaries: Record<string, Record<string, string>> = {
   "pt-PT": ptPT,
   en,
   es,
   fr,
-  ro // <-- LINIE NOUĂ: înregistrare dicționar românesc
+  ro
 };
 
 export const supportedLocales = [
@@ -18,7 +18,7 @@ export const supportedLocales = [
   { code: "en", name: "English" },
   { code: "es", name: "Español" },
   { code: "fr", name: "Français" },
-  { code: "ro", name: "Română" } // <-- LINIE NOUĂ: afișare în lista de limbi
+  { code: "ro", name: "Română" }
 ];
 
 type I18nContextValue = {
