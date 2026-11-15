@@ -13,6 +13,14 @@ The project is a clean rewrite with a shared React/TypeScript interface. It can 
 - View the complete repair history directly from the customer record.
 - Create a new customer directly while opening a repair.
 
+### Equipment
+
+- Create, edit, search and delete equipment records linked to customers.
+- Device type, brand, model, serial number (SN), IMEI and notes.
+- View the complete repair history and last repair date for each equipment.
+- Filter by customer and search by brand, model, SN, IMEI or customer.
+- Link a repair to an existing equipment, or register the device automatically when opening a repair.
+
 ### Repairs
 
 - Create and edit repair jobs.
@@ -64,7 +72,7 @@ Live overview with:
 ### Settings and data
 
 - Global application language.
-- Portuguese (Portugal), English, Spanish and French.
+- Portuguese (Portugal), English, Spanish, French and Romanian.
 - Company name, tax number, address, phone, email and logo.
 - Manual SQLite database backup.
 - CSV export for customers.
@@ -141,7 +149,7 @@ The desktop edition uses a local SQLite database. Application data is stored in 
 
 Use the built-in backup function before moving or reinstalling systems.
 
-The server edition stores shared data in its PostgreSQL Docker volume. Desktop and server data remain independent until a portable `.dbrepairs` backup is explicitly restored. This format transfers settings, statuses, customers, repairs and status history in either direction between SQLite and PostgreSQL.
+The server edition stores shared data in its PostgreSQL Docker volume. Desktop and server data remain independent until a portable `.dbrepairs` backup is explicitly restored. This format transfers settings, statuses, customers, equipment, repairs, status history and attachments in either direction between SQLite and PostgreSQL. Older portable backups remain compatible.
 
 ## Translation
 

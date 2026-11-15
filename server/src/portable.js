@@ -1,5 +1,5 @@
 const FORMAT = "dbrepairs-portable";
-const VERSION = 2;
+const VERSION = 3;
 
 export class PortableBackupError extends Error {}
 
@@ -54,7 +54,7 @@ export function validatePortableBackup(value) {
   const archive = record(value, "backup");
   if (
     archive.format !== FORMAT ||
-    (archive.version !== 1 && archive.version !== 2)
+    (archive.version !== 1 && archive.version !== 2 && archive.version !== 3)
   ) {
     throw new PortableBackupError(
       "Unsupported DBRepairs portable backup"
@@ -86,11 +86,30 @@ export function validatePortableBackup(value) {
       created_at: timestamp(row.created_at, `customers[${index}].created_at`), updated_at: timestamp(row.updated_at, `customers[${index}].updated_at`),
     };
   });
+  const equipment = array(
+    data.equipment ?? [],
+    "equipment",
+  ).map((item, index) => {
+    const row = record(item, `equipment[${index}]`);
+    return {
+      id: integer(row.id, `equipment[${index}].id`),
+      customer_id: integer(row.customer_id, `equipment[${index}].customer_id`),
+      device_type: text(row.device_type, `equipment[${index}].device_type`, { nullable: true }),
+      brand: text(row.brand, `equipment[${index}].brand`, { nullable: true }),
+      model: text(row.model, `equipment[${index}].model`, { nullable: true }),
+      serial_number: text(row.serial_number, `equipment[${index}].serial_number`, { nullable: true }),
+      imei: text(row.imei, `equipment[${index}].imei`, { nullable: true }),
+      notes: text(row.notes, `equipment[${index}].notes`, { nullable: true }),
+      created_at: timestamp(row.created_at, `equipment[${index}].created_at`),
+      updated_at: timestamp(row.updated_at, `equipment[${index}].updated_at`),
+    };
+  });
   const repairs = array(data.repairs, "repairs").map((item, index) => {
     const row = record(item, `repairs[${index}]`);
     return {
       id: integer(row.id, `repairs[${index}].id`), repair_number: text(row.repair_number, `repairs[${index}].repair_number`, { max: 200 }),
       customer_id: integer(row.customer_id, `repairs[${index}].customer_id`), status_id: integer(row.status_id, `repairs[${index}].status_id`),
+      equipment_id: row.equipment_id == null ? null : integer(row.equipment_id, `repairs[${index}].equipment_id`),
       device_type: text(row.device_type, `repairs[${index}].device_type`, { nullable: true }), brand: text(row.brand, `repairs[${index}].brand`, { nullable: true }),
       model: text(row.model, `repairs[${index}].model`, { nullable: true }), serial_number: text(row.serial_number, `repairs[${index}].serial_number`, { nullable: true }),
       imei: text(row.imei, `repairs[${index}].imei`, { nullable: true }), reported_fault: text(row.reported_fault, `repairs[${index}].reported_fault`, { nullable: true }),
@@ -202,6 +221,7 @@ export function validatePortableBackup(value) {
   if (!statuses.length) throw new PortableBackupError("At least one repair status is required");
   unique(settings, "key", "settings"); unique(statuses, "id", "statuses"); unique(statuses, "code", "statuses");
   unique(customers, "id", "customers");
+  unique(equipment, "id", "equipment");
   unique(repairs, "id", "repairs");
   unique(repairs, "repair_number", "repairs");
   unique(history, "id", "history");
@@ -214,18 +234,32 @@ export function validatePortableBackup(value) {
   const statusIds =
     new Set(statuses.map((row) => row.id));
 
+  const equipmentIds =
+    new Set(equipment.map((row) => row.id));
+
   const repairIds =
     new Set(repairs.map((row) => row.id));
+
+  if (
+    equipment.some(
+      (row) => !customerIds.has(row.customer_id),
+    )
+  ) {
+    throw new PortableBackupError(
+      "Equipment references a missing customer",
+    );
+  }
 
   if (
     repairs.some(
       (row) =>
         !customerIds.has(row.customer_id) ||
-        !statusIds.has(row.status_id),
+        !statusIds.has(row.status_id) ||
+        (row.equipment_id !== null && !equipmentIds.has(row.equipment_id)),
     )
   ) {
     throw new PortableBackupError(
-      "A repair references a missing customer or status",
+      "A repair references a missing customer, status or equipment",
     );
   }
 
@@ -283,6 +317,7 @@ export function validatePortableBackup(value) {
       settings,
       statuses,
       customers,
+      equipment,
       repairs,
       history,
       customerAttachments,
@@ -299,6 +334,7 @@ export async function exportPortableBackup(pool) {
       settings,
       statuses,
       customers,
+      equipment,
       repairs,
       history,
       customerAttachments,
@@ -314,7 +350,10 @@ export async function exportPortableBackup(pool) {
         "SELECT id,name,company,tax_number,phone,email,address,notes,created_at,updated_at FROM customers ORDER BY id"
       ),
       client.query(
-        "SELECT id,repair_number,customer_id,status_id,device_type,brand,model,serial_number,imei,reported_fault,accessories,general_condition,diagnosis,work_performed,estimated_value,final_value,internal_notes,opened_at,closed_at,created_at,updated_at FROM repairs ORDER BY id"
+        "SELECT id,customer_id,device_type,brand,model,serial_number,imei,notes,created_at,updated_at FROM equipment ORDER BY id"
+      ),
+      client.query(
+        "SELECT id,repair_number,customer_id,status_id,equipment_id,device_type,brand,model,serial_number,imei,reported_fault,accessories,general_condition,diagnosis,work_performed,estimated_value,final_value,internal_notes,opened_at,closed_at,created_at,updated_at FROM repairs ORDER BY id"
       ),
       client.query(
         "SELECT id,repair_id,status_id,changed_at,note FROM repair_status_history ORDER BY id"
@@ -349,6 +388,7 @@ export async function exportPortableBackup(pool) {
       settings: settings.rows,
       statuses: statuses.rows,
       customers: customers.rows,
+      equipment: equipment.rows,
       repairs: repairs.rows,
       history: history.rows,
       customerAttachments: customerAttachments.rows,
@@ -373,6 +413,7 @@ export async function importPortableBackup(pool, value) {
       DELETE FROM customer_attachments;
       DELETE FROM repair_status_history;
       DELETE FROM repairs;
+      DELETE FROM equipment;
       DELETE FROM customers;
       DELETE FROM repair_statuses;
       DELETE FROM app_settings
@@ -380,7 +421,8 @@ export async function importPortableBackup(pool, value) {
     for (const row of archive.data.settings) await client.query("INSERT INTO app_settings (key,value) VALUES ($1,$2)", [row.key,row.value]);
     for (const row of archive.data.statuses) await client.query("INSERT INTO repair_statuses (id,code,label_key,sort_order,active) VALUES ($1,$2,$3,$4,$5)", [row.id,row.code,row.label_key,row.sort_order,row.active]);
     for (const row of archive.data.customers) await client.query("INSERT INTO customers (id,name,company,tax_number,phone,email,address,notes,created_at,updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)", Object.values(row));
-    for (const row of archive.data.repairs) await client.query(`INSERT INTO repairs (id,repair_number,customer_id,status_id,device_type,brand,model,serial_number,imei,reported_fault,accessories,general_condition,diagnosis,work_performed,estimated_value,final_value,internal_notes,opened_at,closed_at,created_at,updated_at) VALUES (${Array.from({length:21},(_,i)=>`$${i+1}`).join(",")})`, Object.values(row));
+    for (const row of archive.data.equipment) await client.query(`INSERT INTO equipment (id,customer_id,device_type,brand,model,serial_number,imei,notes,created_at,updated_at) VALUES (${Array.from({length:10},(_,i)=>`$${i+1}`).join(",")})`, Object.values(row));
+    for (const row of archive.data.repairs) await client.query(`INSERT INTO repairs (id,repair_number,customer_id,status_id,equipment_id,device_type,brand,model,serial_number,imei,reported_fault,accessories,general_condition,diagnosis,work_performed,estimated_value,final_value,internal_notes,opened_at,closed_at,created_at,updated_at) VALUES (${Array.from({length:22},(_,i)=>`$${i+1}`).join(",")})`, Object.values(row));
     for (const row of archive.data.history) await client.query("INSERT INTO repair_status_history (id,repair_id,status_id,changed_at,note) VALUES ($1,$2,$3,$4,$5)", Object.values(row));
 
     for (
@@ -445,6 +487,7 @@ export async function importPortableBackup(pool, value) {
     for (const table of [
       "repair_statuses",
       "customers",
+      "equipment",
       "repairs",
       "repair_status_history",
       "customer_attachments",

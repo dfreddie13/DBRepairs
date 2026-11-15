@@ -1,6 +1,7 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import { createCustomer, listCustomers, Customer, CustomerInput } from "../data/customers";
+import { createEquipment, Equipment, listEquipment } from "../data/equipment";
 import {
   createRepair,
   getRepair,
@@ -26,7 +27,7 @@ import {
   validateRepairAttachment,
 } from "../data/repairAttachments";
 
-const blank: RepairInput = {customer_id:0,status_id:0,device_type:"",brand:"",model:"",serial_number:"",imei:"",reported_fault:"",accessories:"",general_condition:"",estimated_value:"",internal_notes:""};
+const blank: RepairInput = {customer_id:0,status_id:0,equipment_id:null,device_type:"",brand:"",model:"",serial_number:"",imei:"",reported_fault:"",accessories:"",general_condition:"",estimated_value:"",internal_notes:""};
 const blankEdit: RepairUpdateInput = {...blank,diagnosis:"",work_performed:"",final_value:""};
 const blankCustomer: CustomerInput = {name:"",company:"",taxNumber:"",phone:"",email:"",address:"",notes:""};
 
@@ -35,6 +36,8 @@ export default function RepairsPage(){
   const [repairs,setRepairs]=useState<Repair[]>([]);
   const [customers,setCustomers]=useState<Customer[]>([]);
   const [statuses,setStatuses]=useState<RepairStatus[]>([]);
+  const [equipment,setEquipment]=useState<Equipment[]>([]);
+  const [registerEquipment,setRegisterEquipment]=useState(true);
   const [form,setForm]=useState<RepairInput>(blank); const [office,setOffice]=useState<OfficeSettings>(defaultOfficeSettings);
   const [open,setOpen]=useState(false);
   const [printing,setPrinting]=useState<Repair|null>(null);
@@ -57,21 +60,23 @@ export default function RepairsPage(){
 
   async function load(){
     try {
-      const [r,c,s]=await Promise.all([listRepairs(),listCustomers(),listStatuses()]);
-      setRepairs(r); setCustomers(c); setStatuses(s);
+      const [r,c,s,e]=await Promise.all([listRepairs(),listCustomers(),listStatuses(),listEquipment()]);
+      setRepairs(r); setCustomers(c); setStatuses(s); setEquipment(e);
       if(s.length) setForm(f=>({...f,status_id:f.status_id||s[0].id}));
     } catch { setError(t("common.databaseError")); }
   }
   useEffect(()=>{load(); getOfficeSettings().then(setOffice).catch(()=>{});},[]);
   const byId=useMemo(()=>new Map(customers.map(c=>[c.id,c])),[customers]);
+  const equipmentForCustomer=useMemo(()=>equipment.filter(e=>e.customer_id===form.customer_id),[equipment,form.customer_id]);
+  const equipmentForEdit=useMemo(()=>equipment.filter(e=>e.customer_id===editForm.customer_id),[equipment,editForm.customer_id]);
   const deviceSuggestions=useMemo(()=>{
     const unique=(values:(string|null)[])=>Array.from(new Set(values.map(v=>v?.trim()).filter((v):v is string=>Boolean(v)))).sort((a,b)=>a.localeCompare(b));
     return {
-      types:unique(repairs.map(r=>r.device_type)),
-      brands:unique(repairs.map(r=>r.brand)),
-      models:unique(repairs.map(r=>r.model)),
+      types:unique([...repairs.map(r=>r.device_type),...equipment.map(e=>e.device_type)]),
+      brands:unique([...repairs.map(r=>r.brand),...equipment.map(e=>e.brand)]),
+      models:unique([...repairs.map(r=>r.model),...equipment.map(e=>e.model)]),
     };
-  },[repairs]);
+  },[repairs,equipment]);
   const filteredRepairs=useMemo(()=>{
     const q=search.trim().toLocaleLowerCase();
     return repairs.filter(r=>{
@@ -87,16 +92,77 @@ export default function RepairsPage(){
     });
   },[repairs,search,statusFilter,scopeFilter]);
 
+  function hasDeviceDetails(input: RepairInput) {
+    return Boolean(input.device_type.trim()||input.brand.trim()||input.model.trim()||input.serial_number.trim()||input.imei.trim());
+  }
+
+  function equipmentLabel(item:Equipment) {
+    return [item.device_type,item.brand,item.model,item.serial_number?`SN ${item.serial_number}`:item.imei].filter(Boolean).join(" · ")||`#${item.id}`;
+  }
+
+  function selectEquipment(id:number) {
+    if(!id){ setRegisterEquipment(false); setForm(f=>({...f,equipment_id:null})); return; }
+    const item=equipment.find(e=>e.id===id);
+    if(!item) return;
+    setForm(f=>({...f,equipment_id:id,
+      device_type:item.device_type||f.device_type,
+      brand:item.brand||f.brand,
+      model:item.model||f.model,
+      serial_number:item.serial_number||f.serial_number,
+      imei:item.imei||f.imei,
+    }));
+  }
+
+  function selectEditEquipment(id:number) {
+    if(!id){ setEditForm(f=>({...f,equipment_id:null})); return; }
+    const item=equipment.find(e=>e.id===id);
+    if(!item) return;
+    setEditForm(f=>({...f,equipment_id:id,
+      device_type:item.device_type||f.device_type,
+      brand:item.brand||f.brand,
+      model:item.model||f.model,
+      serial_number:item.serial_number||f.serial_number,
+      imei:item.imei||f.imei,
+    }));
+  }
+
+  function selectFormCustomer(customerId:number) {
+    setForm(f=>{
+      const current=equipment.find(e=>e.id===f.equipment_id);
+      return {...f,customer_id:customerId,equipment_id:current?.customer_id===customerId?f.equipment_id:null};
+    });
+  }
+
+  function selectEditCustomer(customerId:number) {
+    setEditForm(f=>{
+      const current=equipment.find(e=>e.id===f.equipment_id);
+      return {...f,customer_id:customerId,equipment_id:current?.customer_id===customerId?f.equipment_id:null};
+    });
+  }
+
   async function saveNewRepair(printAfterSave=false){
     if(!form.customer_id||!form.status_id||!form.reported_fault.trim()||saving) return;
     setSaving(true); setError("");
     try{
-      const id=await createRepair(form);
+      let equipmentId=form.equipment_id;
+      if(!equipmentId&&registerEquipment&&hasDeviceDetails(form)){
+        equipmentId=await createEquipment({
+          customer_id:form.customer_id,
+          device_type:form.device_type,
+          brand:form.brand,
+          model:form.model,
+          serial_number:form.serial_number,
+          imei:form.imei,
+          notes:"",
+        });
+      }
+      const id=await createRepair({...form,equipment_id:equipmentId});
       const created=printAfterSave?await getRepair(id):null;
       setOpen(false);
       setQuickCustomerOpen(false);
       setQuickCustomer(blankCustomer);
       setForm({...blank,status_id:statuses[0]?.id||0});
+      setRegisterEquipment(true);
       await load();
       if(created) setPrinting(created);
     } catch {
@@ -118,7 +184,7 @@ export default function RepairsPage(){
       const id=await createCustomer(quickCustomer);
       const updated=await listCustomers();
       setCustomers(updated);
-      setForm(f=>({...f,customer_id:id}));
+      setForm(f=>({...f,customer_id:id,equipment_id:null}));
       setQuickCustomer(blankCustomer);
       setQuickCustomerOpen(false);
     } catch {
@@ -146,7 +212,7 @@ export default function RepairsPage(){
       setHistory(statusHistory);
       setRepairAttachments(attachments);
       setEditForm({
-        customer_id:repair.customer_id,status_id:repair.status_id,device_type:repair.device_type||"",brand:repair.brand||"",model:repair.model||"",
+        customer_id:repair.customer_id,status_id:repair.status_id,equipment_id:repair.equipment_id,device_type:repair.device_type||"",brand:repair.brand||"",model:repair.model||"",
         serial_number:repair.serial_number||"",imei:repair.imei||"",reported_fault:repair.reported_fault||"",accessories:repair.accessories||"",
         general_condition:repair.general_condition||"",estimated_value:repair.estimated_value?.toString()||"",internal_notes:repair.internal_notes||"",
         diagnosis:repair.diagnosis||"",work_performed:repair.work_performed||"",final_value:repair.final_value?.toString()||""
@@ -324,7 +390,7 @@ export default function RepairsPage(){
   }
 
   return <>
-    <header className="page-header"><div><h1>{t("repairs.title")}</h1><p>{t("repairs.emptyHint")}</p></div><button className="primary" onClick={()=>{setQuickCustomerOpen(false);setQuickCustomer(blankCustomer);setOpen(true);}}>+ {t("repair.new")}</button></header>
+    <header className="page-header"><div><h1>{t("repairs.title")}</h1><p>{t("repairs.emptyHint")}</p></div><button className="primary" onClick={()=>{setQuickCustomerOpen(false);setQuickCustomer(blankCustomer);setRegisterEquipment(true);setOpen(true);}}>+ {t("repair.new")}</button></header>
     {error&&<div className="alert error">{error}</div>}
     <section className="panel customers-panel">
       {repairs.length===0?<div className="empty-state compact">{t("repairs.empty")}</div>:<>
@@ -349,7 +415,7 @@ export default function RepairsPage(){
       <div className="field full">
         <span>{t("customer.name")} *</span>
         <div className="customer-select-row">
-          <select value={form.customer_id} onChange={e=>field("customer_id",Number(e.target.value))}>
+          <select value={form.customer_id} onChange={e=>selectFormCustomer(Number(e.target.value))}>
             <option value={0}>{t("repair.selectCustomer")}</option>
             {customers.map(c=><option key={c.id} value={c.id}>{c.name}{c.company?` — ${c.company}`:""}</option>)}
           </select>
@@ -358,6 +424,18 @@ export default function RepairsPage(){
           </button>
         </div>
       </div>
+      <label className="field full">
+        <span>{t("repair.equipment")}</span>
+        <select value={form.equipment_id??0} onChange={e=>selectEquipment(Number(e.target.value))} disabled={!form.customer_id}>
+          <option value={0}>{t("equipment.none")}</option>
+          {equipmentForCustomer.map(e=><option key={e.id} value={e.id}>{equipmentLabel(e)}</option>)}
+        </select>
+        <small>{t("repair.equipmentHint")}</small>
+      </label>
+      {form.customer_id>0&&!form.equipment_id&&<label className="field full checkbox-field">
+        <span className="checkbox-label"><input type="checkbox" checked={registerEquipment} onChange={e=>setRegisterEquipment(e.target.checked)}/>{t("repair.equipmentAutoRegister")}</span>
+        <small>{t("repair.equipmentAutoRegisterHint")}</small>
+      </label>}
       {quickCustomerOpen&&<div className="quick-customer-card full">
         <div className="quick-customer-head">
           <div><strong>{t("repair.quickCustomerTitle")}</strong><p>{t("repair.quickCustomerHint")}</p></div>
@@ -386,7 +464,8 @@ export default function RepairsPage(){
     </div><div className="modal-actions repair-create-actions"><button type="button" className="secondary" onClick={()=>setOpen(false)}>{t("common.cancel")}</button><button type="submit" className="secondary" disabled={saving||!form.customer_id||!form.reported_fault.trim()}>{saving?t("common.saving"):t("common.save")}</button><button type="button" className="primary" disabled={saving||!form.customer_id||!form.reported_fault.trim()} onClick={()=>void saveNewRepair(true)}>{saving?t("common.saving"):t("repair.saveAndPrint")}</button></div></form></section></div>}
 
     {editing&&<div className="modal-backdrop"><section className="modal repair-detail-modal"><div className="modal-head"><div><h2>{editing.repair_number}</h2><p>{editing.customer_name} · {new Date(editing.opened_at).toLocaleString()}</p></div><button className="icon-button" onClick={()=>setEditing(null)}>×</button></div><form onSubmit={saveEdit}><div className="detail-layout"><div className="form-grid detail-form">
-      <label className="field full"><span>{t("customer.name")} *</span><select value={editForm.customer_id} onChange={e=>editField("customer_id",Number(e.target.value))}>{customers.map(c=><option key={c.id} value={c.id}>{c.name}{c.company?` — ${c.company}`:""}</option>)}</select></label>
+      <label className="field full"><span>{t("customer.name")} *</span><select value={editForm.customer_id} onChange={e=>selectEditCustomer(Number(e.target.value))}>{customers.map(c=><option key={c.id} value={c.id}>{c.name}{c.company?` — ${c.company}`:""}</option>)}</select></label>
+      <label className="field full"><span>{t("repair.equipment")}</span><select value={editForm.equipment_id??0} onChange={e=>selectEditEquipment(Number(e.target.value))}><option value={0}>{t("equipment.none")}</option>{equipmentForEdit.map(e=><option key={e.id} value={e.id}>{equipmentLabel(e)}</option>)}</select><small>{t("repair.equipmentEditHint")}</small></label>
       <label className="field"><span>{t("repair.status")}</span><select value={editForm.status_id} onChange={e=>editField("status_id",Number(e.target.value))}>{statuses.map(s=><option key={s.id} value={s.id}>{t(s.label_key)}</option>)}</select></label><label className="field"><span>{t("repair.estimatedValue")}</span><input type="number" step="0.01" min="0" value={editForm.estimated_value} onChange={e=>editField("estimated_value",e.target.value)}/></label>
       {editForm.status_id!==editing.status_id&&<label className="field full status-note-field"><span>{t("repair.statusNote")}</span><input value={statusNote} onChange={e=>setStatusNote(e.target.value)} placeholder={t("repair.statusNotePlaceholder")}/><small>{t("repair.statusNoteHint")}</small></label>}
       <label className="field"><span>{t("repair.deviceType")}</span><input list="dbrepairs-device-types" value={editForm.device_type} onChange={e=>editField("device_type",e.target.value)}/></label><label className="field"><span>{t("repair.brand")}</span><input list="dbrepairs-brands" value={editForm.brand} onChange={e=>editField("brand",e.target.value)}/></label>

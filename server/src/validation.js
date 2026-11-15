@@ -22,6 +22,11 @@ function id(value, field) {
   return parsed;
 }
 
+function optionalId(value, field) {
+  if (value == null || value === "") return null;
+  return id(value, field);
+}
+
 function money(value, field) {
   if (value === "" || value == null) return null;
   const parsed = Number(value);
@@ -47,6 +52,7 @@ export function repairInput(value, update = false) {
   const result = {
     customer_id: id(body.customer_id, "customer_id"),
     status_id: id(body.status_id, "status_id"),
+    equipment_id: optionalId(body.equipment_id, "equipment_id"),
     device_type: text(body.device_type, "device_type", { max: 200 }),
     brand: text(body.brand, "brand", { max: 200 }),
     model: text(body.model, "model", { max: 200 }),
@@ -65,6 +71,19 @@ export function repairInput(value, update = false) {
     result.statusNote = text(body.statusNote, "statusNote");
   }
   return result;
+}
+
+export function equipmentInput(value) {
+  const body = object(value);
+  return {
+    customer_id: id(body.customer_id, "customer_id"),
+    device_type: text(body.device_type, "device_type", { max: 200 }),
+    brand: text(body.brand, "brand", { max: 200 }),
+    model: text(body.model, "model", { max: 200 }),
+    serial_number: text(body.serial_number, "serial_number", { max: 200 }),
+    imei: text(body.imei, "imei", { max: 200 }),
+    notes: text(body.notes, "notes"),
+  };
 }
 
 const officeFields = ["companyName", "taxNumber", "address", "phone", "email", "logoDataUrl"];

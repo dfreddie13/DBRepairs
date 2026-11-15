@@ -1,8 +1,12 @@
-name: Build and Push Romanian Docker Image
+name: Build and Push Docker Images
 
 on:
   push:
-    branches: [ "add-romanian-translation" ]
+    branches: [ "new-inventory" ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   build-and-push:
@@ -25,7 +29,17 @@ jobs:
         with:
           context: .
           push: true
-          tags: dfreddie13/dbrepairs-ro-web:latest
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-   # Trigger build
+          tags: |
+            dfreddie13/dbrepairs-ro-web:new-inventory
+          cache-from: type=gha,scope=web
+          cache-to: type=gha,mode=max,scope=web
+
+      - name: Build and push API image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./server
+          push: true
+          tags: |
+            dfreddie13/dbrepairs-ro-api:new-inventory
+          cache-from: type=gha,scope=api
+          cache-to: type=gha,mode=max,scope=api

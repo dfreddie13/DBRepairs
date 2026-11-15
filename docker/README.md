@@ -76,7 +76,7 @@ Desktop SQLite → Server PostgreSQL
 Server PostgreSQL → Desktop SQLite
 ```
 
-It includes company settings and logo, repair statuses, customers, repairs and complete status history. Restoring replaces all current application data after automatically creating a native safety backup. The archive is validated before replacement and imported in one database transaction.
+It includes company settings and logo, repair statuses, customers, equipment, repairs, complete status history and attachments. Older portable backups remain compatible. Restoring replaces all current application data after automatically creating a native safety backup. The archive is validated before replacement and imported in one database transaction.
 
 Use native backups for disaster recovery of the same database engine. Use portable backups to move or clone DBRepairs data between desktop and server editions.
 

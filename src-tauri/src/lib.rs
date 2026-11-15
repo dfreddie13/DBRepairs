@@ -116,6 +116,8 @@ struct PortableData {
     settings: Vec<PortableSetting>,
     statuses: Vec<PortableStatus>,
     customers: Vec<PortableCustomer>,
+    #[serde(default)]
+    equipment: Vec<PortableEquipment>,
     repairs: Vec<PortableRepair>,
     history: Vec<PortableHistory>,
     #[serde(default, rename = "customerAttachments")]
@@ -130,8 +132,16 @@ struct PortableStatus { id: i64, code: String, label_key: String, sort_order: i6
 #[derive(Deserialize)]
 struct PortableCustomer { id: i64, name: String, company: Option<String>, tax_number: Option<String>, phone: Option<String>, email: Option<String>, address: Option<String>, notes: Option<String>, created_at: String, updated_at: String }
 #[derive(Deserialize)]
+struct PortableEquipment {
+    id: i64, customer_id: i64, device_type: Option<String>, brand: Option<String>, model: Option<String>,
+    serial_number: Option<String>, imei: Option<String>, notes: Option<String>, created_at: String, updated_at: String,
+}
+#[derive(Deserialize)]
 struct PortableRepair {
-    id: i64, repair_number: String, customer_id: i64, status_id: i64, device_type: Option<String>, brand: Option<String>, model: Option<String>,
+    id: i64, repair_number: String, customer_id: i64, status_id: i64,
+    #[serde(default)]
+    equipment_id: Option<i64>,
+    device_type: Option<String>, brand: Option<String>, model: Option<String>,
     serial_number: Option<String>, imei: Option<String>, reported_fault: Option<String>, accessories: Option<String>, general_condition: Option<String>,
     diagnosis: Option<String>, work_performed: Option<String>, estimated_value: Option<f64>, final_value: Option<f64>, internal_notes: Option<String>,
     opened_at: String, closed_at: Option<String>, created_at: String, updated_at: String,
@@ -164,7 +174,7 @@ struct PortableRepairAttachment {
 #[tauri::command]
 fn restore_portable_database(app: tauri::AppHandle, archive: PortableArchive) -> Result<(), String> {
     if archive.format != "dbrepairs-portable"
-        || (archive.version != 1 && archive.version != 2)
+        || (archive.version != 1 && archive.version != 2 && archive.version != 3)
         || archive.data.statuses.is_empty()
     {
         return Err("Unsupported or incomplete DBRepairs portable backup".into());
@@ -183,6 +193,7 @@ fn restore_portable_connection(connection: &mut Connection, archive: PortableArc
          DELETE FROM customer_attachments;
          DELETE FROM repair_status_history;
          DELETE FROM repairs;
+         DELETE FROM equipment;
          DELETE FROM customers;
          DELETE FROM repair_statuses;
          DELETE FROM app_settings;"
@@ -196,8 +207,11 @@ fn restore_portable_connection(connection: &mut Connection, archive: PortableArc
     for row in archive.data.customers {
         transaction.execute("INSERT INTO customers (id,name,company,tax_number,phone,email,address,notes,created_at,updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)", params![row.id,row.name,row.company,row.tax_number,row.phone,row.email,row.address,row.notes,row.created_at,row.updated_at]).map_err(|e|e.to_string())?;
     }
+    for row in archive.data.equipment {
+        transaction.execute("INSERT INTO equipment (id,customer_id,device_type,brand,model,serial_number,imei,notes,created_at,updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)", params![row.id,row.customer_id,row.device_type,row.brand,row.model,row.serial_number,row.imei,row.notes,row.created_at,row.updated_at]).map_err(|e|e.to_string())?;
+    }
     for row in archive.data.repairs {
-        transaction.execute("INSERT INTO repairs (id,repair_number,customer_id,status_id,device_type,brand,model,serial_number,imei,reported_fault,accessories,general_condition,diagnosis,work_performed,estimated_value,final_value,internal_notes,opened_at,closed_at,created_at,updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21)", params![row.id,row.repair_number,row.customer_id,row.status_id,row.device_type,row.brand,row.model,row.serial_number,row.imei,row.reported_fault,row.accessories,row.general_condition,row.diagnosis,row.work_performed,row.estimated_value,row.final_value,row.internal_notes,row.opened_at,row.closed_at,row.created_at,row.updated_at]).map_err(|e|e.to_string())?;
+        transaction.execute("INSERT INTO repairs (id,repair_number,customer_id,status_id,equipment_id,device_type,brand,model,serial_number,imei,reported_fault,accessories,general_condition,diagnosis,work_performed,estimated_value,final_value,internal_notes,opened_at,closed_at,created_at,updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22)", params![row.id,row.repair_number,row.customer_id,row.status_id,row.equipment_id,row.device_type,row.brand,row.model,row.serial_number,row.imei,row.reported_fault,row.accessories,row.general_condition,row.diagnosis,row.work_performed,row.estimated_value,row.final_value,row.internal_notes,row.opened_at,row.closed_at,row.created_at,row.updated_at]).map_err(|e|e.to_string())?;
     }
     for row in archive.data.history {
         transaction.execute("INSERT INTO repair_status_history (id,repair_id,status_id,changed_at,note) VALUES (?1,?2,?3,?4,?5)", params![row.id,row.repair_id,row.status_id,row.changed_at,row.note]).map_err(|e|e.to_string())?;
@@ -236,10 +250,11 @@ fn restore_portable_connection(connection: &mut Connection, archive: PortableArc
             ]
         ).map_err(|e|e.to_string())?;
     }
-    transaction.execute("DELETE FROM sqlite_sequence WHERE name IN ('repair_statuses','customers','repairs','repair_status_history')", []).map_err(|e|e.to_string())?;
+    transaction.execute("DELETE FROM sqlite_sequence WHERE name IN ('repair_statuses','customers','equipment','repairs','repair_status_history')", []).map_err(|e|e.to_string())?;
     for table in [
         "repair_statuses",
         "customers",
+        "equipment",
         "repairs",
         "repair_status_history",
         "customer_attachments",
@@ -260,12 +275,14 @@ mod tests {
         connection.execute_batch(include_str!("../migrations/0001_initial.sql")).unwrap();
         connection.execute_batch(include_str!("../migrations/0002_customer_attachments.sql")).unwrap();
         connection.execute_batch(include_str!("../migrations/0003_repair_attachments.sql")).unwrap();
+        connection.execute_batch(include_str!("../migrations/0004_equipment.sql")).unwrap();
         connection.execute("INSERT INTO customers (name) VALUES ('Old data')", []).unwrap();
         let archive = PortableArchive { format:"dbrepairs-portable".into(), version:1, data:PortableData {
             settings:vec![PortableSetting{key:"office.companyName".into(),value:"RepairsLab".into()}],
             statuses:vec![PortableStatus{id:4,code:"RECEIVED".into(),label_key:"status.received".into(),sort_order:10,active:true}],
             customers:vec![PortableCustomer{id:7,name:"Portable customer".into(),company:None,tax_number:None,phone:None,email:None,address:None,notes:None,created_at:"2026-08-21 12:00:00".into(),updated_at:"2026-08-21 12:00:00".into()}],
-            repairs:vec![PortableRepair{id:9,repair_number:"2026-000009".into(),customer_id:7,status_id:4,device_type:Some("Laptop".into()),brand:None,model:None,serial_number:None,imei:None,reported_fault:Some("Test".into()),accessories:None,general_condition:None,diagnosis:None,work_performed:None,estimated_value:None,final_value:None,internal_notes:None,opened_at:"2026-08-21 12:00:00".into(),closed_at:None,created_at:"2026-08-21 12:00:00".into(),updated_at:"2026-08-21 12:00:00".into()}],
+            equipment:vec![],
+            repairs:vec![PortableRepair{id:9,repair_number:"2026-000009".into(),customer_id:7,status_id:4,equipment_id:None,device_type:Some("Laptop".into()),brand:None,model:None,serial_number:None,imei:None,reported_fault:Some("Test".into()),accessories:None,general_condition:None,diagnosis:None,work_performed:None,estimated_value:None,final_value:None,internal_notes:None,opened_at:"2026-08-21 12:00:00".into(),closed_at:None,created_at:"2026-08-21 12:00:00".into(),updated_at:"2026-08-21 12:00:00".into()}],
             history:vec![PortableHistory{id:11,repair_id:9,status_id:4,changed_at:"2026-08-21 12:00:00".into(),note:None}],
             customer_attachments:vec![],
             repair_attachments:vec![],
@@ -296,6 +313,12 @@ pub fn run() {
             version: 3,
             description: "repair_attachments",
             sql: include_str!("../migrations/0003_repair_attachments.sql"),
+            kind: MigrationKind::Up,
+        },
+        Migration {
+            version: 4,
+            description: "equipment",
+            sql: include_str!("../migrations/0004_equipment.sql"),
             kind: MigrationKind::Up,
         },
     ];

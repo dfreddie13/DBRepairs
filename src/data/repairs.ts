@@ -5,13 +5,14 @@ import { isServerMode } from "./runtime";
 export type RepairStatus = { id: number; code: string; label_key: string; sort_order: number };
 export type Repair = {
   id: number; repair_number: string; customer_id: number; customer_name: string; status_id: number; status_code: string; status_label_key: string;
+  equipment_id: number | null;
   device_type: string | null; brand: string | null; model: string | null; serial_number: string | null; imei: string | null;
   reported_fault: string | null; accessories: string | null; general_condition: string | null; diagnosis: string | null; work_performed: string | null;
   estimated_value: number | null; final_value: number | null; internal_notes: string | null; opened_at: string; closed_at: string | null;
 };
 
 export type RepairInput = {
-  customer_id: number; status_id: number; device_type: string; brand: string; model: string; serial_number: string; imei: string;
+  customer_id: number; status_id: number; equipment_id: number | null; device_type: string; brand: string; model: string; serial_number: string; imei: string;
   reported_fault: string; accessories: string; general_condition: string; estimated_value: string; internal_notes: string;
 };
 
@@ -55,6 +56,17 @@ export async function listRepairsByCustomer(customerId: number): Promise<Repair[
     ORDER BY r.id DESC`, [customerId]);
 }
 
+export async function listRepairsByEquipment(equipmentId: number): Promise<Repair[]> {
+  if (isServerMode) return api(`/repairs?equipmentId=${equipmentId}`);
+  const db = await getDatabase();
+  return db.select(`SELECT r.*, c.name customer_name, s.code status_code, s.label_key status_label_key
+    FROM repairs r
+    JOIN customers c ON c.id=r.customer_id
+    JOIN repair_statuses s ON s.id=r.status_id
+    WHERE r.equipment_id=?
+    ORDER BY r.id DESC`, [equipmentId]);
+}
+
 export async function getRepair(id: number): Promise<Repair | null> {
   if (isServerMode) {
     try { return await api(`/repairs/${id}`); }
@@ -88,8 +100,8 @@ export async function createRepair(input: RepairInput): Promise<number> {
   const db = await getDatabase();
   const temp = `TMP-${Date.now()}`;
   const result = await db.execute(`INSERT INTO repairs
-    (repair_number,customer_id,status_id,device_type,brand,model,serial_number,imei,reported_fault,accessories,general_condition,estimated_value,internal_notes)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`, [temp,input.customer_id,input.status_id,input.device_type||null,input.brand||null,input.model||null,input.serial_number||null,input.imei||null,input.reported_fault||null,input.accessories||null,input.general_condition||null,input.estimated_value?Number(input.estimated_value):null,input.internal_notes||null]);
+    (repair_number,customer_id,status_id,equipment_id,device_type,brand,model,serial_number,imei,reported_fault,accessories,general_condition,estimated_value,internal_notes)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, [temp,input.customer_id,input.status_id,input.equipment_id,input.device_type||null,input.brand||null,input.model||null,input.serial_number||null,input.imei||null,input.reported_fault||null,input.accessories||null,input.general_condition||null,input.estimated_value?Number(input.estimated_value):null,input.internal_notes||null]);
   const id = Number(result.lastInsertId);
   await db.execute("UPDATE repairs SET repair_number=? WHERE id=?", [repairNumber(id), id]);
   await db.execute("INSERT INTO repair_status_history (repair_id,status_id) VALUES (?,?)", [id,input.status_id]);
@@ -100,11 +112,11 @@ export async function updateRepair(id: number, input: RepairUpdateInput, previou
   if (isServerMode) return api(`/repairs/${id}`, { method: "PUT", body: JSON.stringify({ ...input, previousStatusId, statusNote }) });
   const db = await getDatabase();
   await db.execute(`UPDATE repairs SET
-    customer_id=?, status_id=?, device_type=?, brand=?, model=?, serial_number=?, imei=?, reported_fault=?, accessories=?, general_condition=?,
+    customer_id=?, status_id=?, equipment_id=?, device_type=?, brand=?, model=?, serial_number=?, imei=?, reported_fault=?, accessories=?, general_condition=?,
     diagnosis=?, work_performed=?, estimated_value=?, final_value=?, internal_notes=?, updated_at=CURRENT_TIMESTAMP,
     closed_at=CASE WHEN (SELECT code FROM repair_statuses WHERE id=?) IN ('DELIVERED','CANCELLED') THEN COALESCE(closed_at,CURRENT_TIMESTAMP) ELSE NULL END
     WHERE id=?`, [
-      input.customer_id,input.status_id,input.device_type||null,input.brand||null,input.model||null,input.serial_number||null,input.imei||null,
+      input.customer_id,input.status_id,input.equipment_id,input.device_type||null,input.brand||null,input.model||null,input.serial_number||null,input.imei||null,
       input.reported_fault||null,input.accessories||null,input.general_condition||null,input.diagnosis||null,input.work_performed||null,
       input.estimated_value?Number(input.estimated_value):null,input.final_value?Number(input.final_value):null,input.internal_notes||null,input.status_id,id
     ]);

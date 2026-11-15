@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import CustomersPage from "./pages/CustomersPage";
+import EquipmentPage from "./pages/EquipmentPage";
 import LanguageDropdown from "./components/LanguageDropdown";
 import SettingsPage from "./pages/SettingsPage";
 import RepairsPage from "./pages/RepairsPage";
@@ -11,7 +12,7 @@ import {
 } from "./data/dashboard";
 import { useI18n } from "./i18n/I18nProvider";
 
-type Page = "dashboard" | "repairs" | "customers" | "settings";
+type Page = "dashboard" | "repairs" | "equipment" | "customers" | "settings";
 
 const emptyStats: DashboardStats = {
   openRepairs: 0,
@@ -84,6 +85,7 @@ export default function App() {
         <nav>
           <button className={page === "dashboard" ? "active" : ""} onClick={() => setPage("dashboard")}>{t("nav.dashboard")}</button>
           <button className={page === "repairs" ? "active" : ""} onClick={() => setPage("repairs")}>{t("nav.repairs")}</button>
+          <button className={page === "equipment" ? "active" : ""} onClick={() => setPage("equipment")}>{t("nav.equipment")}</button>
           <button className={page === "customers" ? "active" : ""} onClick={() => setPage("customers")}>{t("nav.customers")}</button>
           <button className={page === "settings" ? "active" : ""} onClick={() => setPage("settings")}>{t("nav.settings")}</button>
         </nav>
@@ -153,6 +155,8 @@ export default function App() {
         {page === "customers" && <CustomersPage />}
 
         {page === "repairs" && <RepairsPage />}
+
+        {page === "equipment" && <EquipmentPage />}
 
         {page === "settings" && <SettingsPage />}
       </main>

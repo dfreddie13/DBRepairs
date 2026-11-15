@@ -1,12 +1,18 @@
 import Fastify from "fastify";
 import { createPostgresBackup, isPostgresBackup, restorePostgresBackup } from "./backup.js";
-import { customerInput, officeSettingsInput, pathId, repairInput, ValidationError } from "./validation.js";
+import { customerInput, equipmentInput, officeSettingsInput, pathId, repairInput, ValidationError } from "./validation.js";
 import { exportPortableBackup, importPortableBackup, PortableBackupError } from "./portable.js";
 
 const repairSelect = `SELECT r.*, c.name customer_name, s.code status_code, s.label_key status_label_key
   FROM repairs r
   JOIN customers c ON c.id = r.customer_id
   JOIN repair_statuses s ON s.id = r.status_id`;
+
+const equipmentSelect = `SELECT e.*, c.name customer_name,
+  (SELECT COUNT(*) FROM repairs r WHERE r.equipment_id = e.id)::integer repair_count,
+  (SELECT MAX(r.opened_at) FROM repairs r WHERE r.equipment_id = e.id) last_repair_at
+  FROM equipment e
+  JOIN customers c ON c.id = e.customer_id`;
 
 function replyNotFound(reply) {
   return reply.code(404).send({ error: "Not found" });
@@ -84,6 +90,59 @@ export function buildApp({ pool, config, logger = true, migrateDatabase }) {
 
   app.delete("/api/customers/:id", async (request, reply) => {
     const result = await pool.query("DELETE FROM customers WHERE id=$1", [pathId(request.params.id)]);
+    if (!result.rowCount) return replyNotFound(reply);
+    return reply.code(204).send();
+  });
+
+  app.get("/api/equipment", async (request) => {
+    const search = typeof request.query?.search === "string" ? request.query.search.trim() : "";
+    const term = `%${search}%`;
+    const customerId =
+      request.query?.customerId != null && request.query.customerId !== ""
+        ? pathId(request.query.customerId, "customerId")
+        : null;
+
+    return (await pool.query(`${equipmentSelect}
+      WHERE ($1 = '%%'
+         OR COALESCE(e.device_type, '') ILIKE $1
+         OR COALESCE(e.brand, '') ILIKE $1
+         OR COALESCE(e.model, '') ILIKE $1
+         OR COALESCE(e.serial_number, '') ILIKE $1
+         OR COALESCE(e.imei, '') ILIKE $1
+         OR COALESCE(e.notes, '') ILIKE $1
+         OR c.name ILIKE $1)
+        AND ($2::bigint IS NULL OR e.customer_id = $2)
+      ORDER BY lower(c.name), lower(COALESCE(e.brand, '')), lower(COALESCE(e.model, '')), e.id DESC`,
+      [term, customerId])).rows;
+  });
+
+  app.get("/api/equipment/:id", async (request, reply) => {
+    const result = await pool.query(`${equipmentSelect} WHERE e.id=$1 LIMIT 1`, [pathId(request.params.id)]);
+    if (!result.rowCount) return replyNotFound(reply);
+    return result.rows[0];
+  });
+
+  app.post("/api/equipment", async (request, reply) => {
+    const input = equipmentInput(request.body);
+    const result = await pool.query(`INSERT INTO equipment
+      (customer_id, device_type, brand, model, serial_number, imei, notes)
+      VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id`,
+      [input.customer_id, input.device_type, input.brand, input.model, input.serial_number, input.imei, input.notes]);
+    return reply.code(201).send({ id: result.rows[0].id });
+  });
+
+  app.put("/api/equipment/:id", async (request, reply) => {
+    const id = pathId(request.params.id);
+    const input = equipmentInput(request.body);
+    const result = await pool.query(`UPDATE equipment SET customer_id=$1, device_type=$2, brand=$3, model=$4,
+      serial_number=$5, imei=$6, notes=$7, updated_at=now() WHERE id=$8`,
+      [input.customer_id, input.device_type, input.brand, input.model, input.serial_number, input.imei, input.notes, id]);
+    if (!result.rowCount) return replyNotFound(reply);
+    return reply.code(204).send();
+  });
+
+  app.delete("/api/equipment/:id", async (request, reply) => {
+    const result = await pool.query("DELETE FROM equipment WHERE id=$1", [pathId(request.params.id)]);
     if (!result.rowCount) return replyNotFound(reply);
     return reply.code(204).send();
   });
@@ -269,6 +328,10 @@ export function buildApp({ pool, config, logger = true, migrateDatabase }) {
     const customerId = request.query?.customerId;
     if (customerId != null && customerId !== "") {
       return (await pool.query(`${repairSelect} WHERE r.customer_id=$1 ORDER BY r.id DESC`, [pathId(customerId, "customerId")])).rows;
+    }
+    const equipmentId = request.query?.equipmentId;
+    if (equipmentId != null && equipmentId !== "") {
+      return (await pool.query(`${repairSelect} WHERE r.equipment_id=$1 ORDER BY r.id DESC`, [pathId(equipmentId, "equipmentId")])).rows;
     }
     return (await pool.query(`${repairSelect} ORDER BY r.id DESC`)).rows;
   });
@@ -514,9 +577,9 @@ export function buildApp({ pool, config, logger = true, migrateDatabase }) {
       await client.query("BEGIN");
       const temporary = `TMP-${crypto.randomUUID()}`;
       const result = await client.query(`INSERT INTO repairs
-        (repair_number,customer_id,status_id,device_type,brand,model,serial_number,imei,reported_fault,accessories,general_condition,estimated_value,internal_notes)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING id, EXTRACT(YEAR FROM opened_at)::integer opened_year`,
-        [temporary,input.customer_id,input.status_id,input.device_type,input.brand,input.model,input.serial_number,input.imei,input.reported_fault,
+        (repair_number,customer_id,status_id,equipment_id,device_type,brand,model,serial_number,imei,reported_fault,accessories,general_condition,estimated_value,internal_notes)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING id, EXTRACT(YEAR FROM opened_at)::integer opened_year`,
+        [temporary,input.customer_id,input.status_id,input.equipment_id,input.device_type,input.brand,input.model,input.serial_number,input.imei,input.reported_fault,
           input.accessories,input.general_condition,input.estimated_value,input.internal_notes]);
       const { id, opened_year: openedYear } = result.rows[0];
       const repairNumber = `${openedYear}-${String(id).padStart(6, "0")}`;
@@ -543,11 +606,11 @@ export function buildApp({ pool, config, logger = true, migrateDatabase }) {
         await client.query("ROLLBACK");
         return replyNotFound(reply);
       }
-      await client.query(`UPDATE repairs SET customer_id=$1, status_id=$2, device_type=$3, brand=$4, model=$5, serial_number=$6,
-        imei=$7, reported_fault=$8, accessories=$9, general_condition=$10, diagnosis=$11, work_performed=$12, estimated_value=$13,
-        final_value=$14, internal_notes=$15, updated_at=now(), closed_at=CASE
+      await client.query(`UPDATE repairs SET customer_id=$1, status_id=$2, equipment_id=$3, device_type=$4, brand=$5, model=$6, serial_number=$7,
+        imei=$8, reported_fault=$9, accessories=$10, general_condition=$11, diagnosis=$12, work_performed=$13, estimated_value=$14,
+        final_value=$15, internal_notes=$16, updated_at=now(), closed_at=CASE
           WHEN (SELECT code FROM repair_statuses WHERE id=$2) IN ('DELIVERED','CANCELLED') THEN COALESCE(closed_at,now()) ELSE NULL END
-        WHERE id=$16`, [input.customer_id,input.status_id,input.device_type,input.brand,input.model,input.serial_number,input.imei,
+        WHERE id=$17`, [input.customer_id,input.status_id,input.equipment_id,input.device_type,input.brand,input.model,input.serial_number,input.imei,
           input.reported_fault,input.accessories,input.general_condition,input.diagnosis,input.work_performed,input.estimated_value,
           input.final_value,input.internal_notes,id]);
       if (current.rows[0].status_id !== input.status_id) {

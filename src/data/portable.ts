@@ -5,13 +5,14 @@ import { isServerMode } from "./runtime";
 
 export type PortableBackup = {
   format: "dbrepairs-portable";
-  version: 1 | 2;
+  version: 1 | 2 | 3;
   createdAt: string;
   sourceEngine: "sqlite" | "postgresql";
   data: {
     settings: Record<string, unknown>[];
     statuses: Record<string, unknown>[];
     customers: Record<string, unknown>[];
+    equipment: Record<string, unknown>[];
     repairs: Record<string, unknown>[];
     history: Record<string, unknown>[];
     customerAttachments: Record<string, unknown>[];
@@ -37,7 +38,7 @@ export function parsePortableBackup(text: string): PortableBackup {
 
   if (
     archive.format !== "dbrepairs-portable" ||
-    (archive.version !== 1 && archive.version !== 2) ||
+    (archive.version !== 1 && archive.version !== 2 && archive.version !== 3) ||
     !data ||
     !Array.isArray(data.settings) ||
     !Array.isArray(data.statuses) ||
@@ -55,6 +56,10 @@ export function parsePortableBackup(text: string): PortableBackup {
     ...archive,
     data: {
       ...data,
+      equipment:
+        Array.isArray(data.equipment)
+          ? data.equipment
+          : [],
       customerAttachments:
         Array.isArray(data.customerAttachments)
           ? data.customerAttachments
@@ -84,6 +89,7 @@ export async function exportPortableBackup(): Promise<string> {
     settings,
     statuses,
     customers,
+    equipment,
     repairs,
     history,
     customerAttachments,
@@ -99,7 +105,10 @@ export async function exportPortableBackup(): Promise<string> {
       "SELECT id,name,company,tax_number,phone,email,address,notes,created_at,updated_at FROM customers ORDER BY id",
     ),
     db.select<Record<string, unknown>[]>(
-      "SELECT id,repair_number,customer_id,status_id,device_type,brand,model,serial_number,imei,reported_fault,accessories,general_condition,diagnosis,work_performed,estimated_value,final_value,internal_notes,opened_at,closed_at,created_at,updated_at FROM repairs ORDER BY id",
+      "SELECT id,customer_id,device_type,brand,model,serial_number,imei,notes,created_at,updated_at FROM equipment ORDER BY id",
+    ),
+    db.select<Record<string, unknown>[]>(
+      "SELECT id,repair_number,customer_id,status_id,equipment_id,device_type,brand,model,serial_number,imei,reported_fault,accessories,general_condition,diagnosis,work_performed,estimated_value,final_value,internal_notes,opened_at,closed_at,created_at,updated_at FROM repairs ORDER BY id",
     ),
     db.select<Record<string, unknown>[]>(
       "SELECT id,repair_id,status_id,changed_at,note FROM repair_status_history ORDER BY id",
@@ -138,13 +147,14 @@ export async function exportPortableBackup(): Promise<string> {
 
   const archive: PortableBackup = {
     format: "dbrepairs-portable",
-    version: 2,
+    version: 3,
     createdAt: new Date().toISOString(),
     sourceEngine: "sqlite",
     data: {
       settings,
       statuses: normalizedStatuses,
       customers,
+      equipment,
       repairs,
       history,
       customerAttachments,
