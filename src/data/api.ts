@@ -1,4 +1,33 @@
 const apiRoot = "/api";
+const sessionTokenKey = "dbrepairs.sessionToken";
+
+export function getSessionToken(): string | null {
+  try {
+    return localStorage.getItem(sessionTokenKey);
+  } catch {
+    return null;
+  }
+}
+
+export function setSessionToken(token: string | null): void {
+  try {
+    if (token) localStorage.setItem(sessionTokenKey, token);
+    else localStorage.removeItem(sessionTokenKey);
+  } catch {
+    // Storage can be unavailable in hardened environments.
+  }
+}
+
+function authHeaders(): Record<string, string> {
+  const token = getSessionToken();
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
+function notifyUnauthorized() {
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new CustomEvent("dbrepairs:unauthorized"));
+  }
+}
 
 async function responseError(response: Response) {
   try {
@@ -10,18 +39,26 @@ async function responseError(response: Response) {
 }
 
 export async function api<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`${apiRoot}${path}`, {
-    ...init,
-    headers: init?.body ? { "Content-Type": "application/json", ...init.headers } : init?.headers,
-  });
-  if (!response.ok) throw new Error(await responseError(response));
+  const headers: Record<string, string> = {
+    ...authHeaders(),
+    ...(init?.body ? { "Content-Type": "application/json" } : {}),
+    ...(init?.headers as Record<string, string> | undefined),
+  };
+  const response = await fetch(`${apiRoot}${path}`, { ...init, headers });
+  if (!response.ok) {
+    if (response.status === 401) notifyUnauthorized();
+    throw new Error(await responseError(response));
+  }
   if (response.status === 204) return undefined as T;
   return response.json() as Promise<T>;
 }
 
 export async function downloadApiFile(path: string): Promise<string> {
-  const response = await fetch(`${apiRoot}${path}`);
-  if (!response.ok) throw new Error(await responseError(response));
+  const response = await fetch(`${apiRoot}${path}`, { headers: authHeaders() });
+  if (!response.ok) {
+    if (response.status === 401) notifyUnauthorized();
+    throw new Error(await responseError(response));
+  }
   const disposition = response.headers.get("Content-Disposition") || "";
   const filename = disposition.match(/filename=([^;]+)/i)?.[1]?.replace(/^"|"$/g, "") || "DBRepairs-backup.dump";
   downloadBlob(await response.blob(), filename);
@@ -31,10 +68,13 @@ export async function downloadApiFile(path: string): Promise<string> {
 export async function restoreApiBackup(data: ArrayBuffer): Promise<void> {
   const response = await fetch(`${apiRoot}/backups/database`, {
     method: "PUT",
-    headers: { "Content-Type": "application/octet-stream" },
+    headers: { ...authHeaders(), "Content-Type": "application/octet-stream" },
     body: data,
   });
-  if (!response.ok) throw new Error(await responseError(response));
+  if (!response.ok) {
+    if (response.status === 401) notifyUnauthorized();
+    throw new Error(await responseError(response));
+  }
 }
 
 export function downloadTextFile(content: string, filename: string) {

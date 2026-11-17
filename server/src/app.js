@@ -1,12 +1,42 @@
 import Fastify from "fastify";
+import {
+  bearerToken,
+  clearLoginFailures,
+  createSession,
+  destroySession,
+  hashPassword,
+  isPublicRoute,
+  loginAllowed,
+  publicUser,
+  recordLoginFailure,
+  sessionTokenHash,
+  userForToken,
+  verifyPassword,
+} from "./auth.js";
 import { createPostgresBackup, isPostgresBackup, restorePostgresBackup } from "./backup.js";
-import { customerInput, equipmentInput, officeSettingsInput, pathId, repairInput, ValidationError } from "./validation.js";
+import {
+  changePasswordInput,
+  customerInput,
+  equipmentInput,
+  loginInput,
+  officeSettingsInput,
+  pathId,
+  repairInput,
+  setupInput,
+  userInput,
+  userUpdateInput,
+  ValidationError,
+} from "./validation.js";
 import { exportPortableBackup, importPortableBackup, PortableBackupError } from "./portable.js";
 
-const repairSelect = `SELECT r.*, c.name customer_name, s.code status_code, s.label_key status_label_key
+const repairSelect = `SELECT r.*, c.name customer_name, s.code status_code, s.label_key status_label_key,
+  u.display_name created_by_name
   FROM repairs r
   JOIN customers c ON c.id = r.customer_id
-  JOIN repair_statuses s ON s.id = r.status_id`;
+  JOIN repair_statuses s ON s.id = r.status_id
+  LEFT JOIN users u ON u.id = r.created_by`;
+
+const DUMMY_PASSWORD_HASH = hashPassword("dbrepairs-timing-check");
 
 const equipmentSelect = `SELECT e.*, c.name customer_name,
   (SELECT COUNT(*) FROM repairs r WHERE r.equipment_id = e.id)::integer repair_count,
@@ -22,9 +52,26 @@ export function buildApp({ pool, config, logger = true, migrateDatabase }) {
   const app = Fastify({ logger, trustProxy: config.trustProxy, bodyLimit: 3_200_000 });
   let restoring = false;
 
+  app.decorateRequest("user", null);
+
   app.addContentTypeParser("application/octet-stream", { parseAs: "buffer", bodyLimit: 256 * 1024 * 1024 }, (_request, body, done) => {
     done(null, body);
   });
+
+  app.addHook("preHandler", async (request, reply) => {
+    if (isPublicRoute(request.method, request.url)) return;
+    const token = bearerToken(request);
+    if (!token) return reply.code(401).send({ error: "Authentication required" });
+    const user = await userForToken(pool, token);
+    if (!user) return reply.code(401).send({ error: "Session expired" });
+    request.user = user;
+  });
+
+  async function adminOnly(request, reply) {
+    if (request.user?.role !== "admin") {
+      return reply.code(403).send({ error: "Admin access required" });
+    }
+  }
 
   app.addHook("onRequest", async (request, reply) => {
     if (restoring && request.url !== "/api/health") {
@@ -46,6 +93,7 @@ export function buildApp({ pool, config, logger = true, migrateDatabase }) {
       return reply.code(error.statusCode).send({ error: error.message });
     }
     if (error.code === "23503") return reply.code(409).send({ error: "This record is still in use" });
+    if (error.code === "23505") return reply.code(409).send({ error: "This value is already in use" });
     request.log.error(error);
     return reply.code(500).send({ error: "Internal server error" });
   });
@@ -55,6 +103,195 @@ export function buildApp({ pool, config, logger = true, migrateDatabase }) {
     await pool.query("SELECT 1");
     return { status: "ok" };
   });
+
+  app.get("/api/auth/status", async (request) => {
+    const result = await pool.query("SELECT COUNT(*)::integer count FROM users");
+    const setupRequired = Number(result.rows[0]?.count || 0) === 0;
+    const token = bearerToken(request);
+    const user = setupRequired || !token ? null : await userForToken(pool, token);
+    return { setupRequired, user };
+  });
+
+  app.post("/api/auth/setup", async (request, reply) => {
+    const input = setupInput(request.body);
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query("SELECT pg_advisory_xact_lock(87234023)");
+      const count = await client.query("SELECT COUNT(*)::integer count FROM users");
+      if (Number(count.rows[0]?.count || 0) > 0) {
+        await client.query("ROLLBACK");
+        return reply.code(409).send({ error: "Setup has already been completed" });
+      }
+      const created = await client.query(
+        `INSERT INTO users (username, display_name, password_hash, role)
+         VALUES ($1, $2, $3, 'admin')
+         RETURNING id, username, display_name, role, active, created_at`,
+        [input.username, input.displayName, hashPassword(input.password)],
+      );
+      const user = publicUser(created.rows[0]);
+      const token = await createSession(client, user.id);
+      await client.query("COMMIT");
+      return reply.code(201).send({ token, user });
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  });
+
+  app.post("/api/auth/login", async (request, reply) => {
+    const input = loginInput(request.body);
+    const key = `${request.ip}:${input.username.toLowerCase()}`;
+    if (!loginAllowed(key)) {
+      return reply.code(429).send({ error: "Too many login attempts. Try again later." });
+    }
+    const result = await pool.query(
+      `SELECT id, username, display_name, role, active, password_hash
+         FROM users WHERE lower(username) = lower($1) LIMIT 1`,
+      [input.username],
+    );
+    const row = result.rows[0];
+    const valid = verifyPassword(input.password, row?.password_hash || DUMMY_PASSWORD_HASH);
+    if (!row || !valid || !row.active) {
+      recordLoginFailure(key);
+      return reply.code(401).send({ error: "Invalid username or password" });
+    }
+    clearLoginFailures(key);
+    const token = await createSession(pool, row.id);
+    return { token, user: publicUser(row) };
+  });
+
+  app.post("/api/auth/logout", async (request, reply) => {
+    await destroySession(pool, bearerToken(request));
+    return reply.code(204).send();
+  });
+
+  app.get("/api/auth/me", async (request) => request.user);
+
+  app.post("/api/auth/password", async (request, reply) => {
+    const input = changePasswordInput(request.body);
+    const current = await pool.query("SELECT password_hash FROM users WHERE id = $1", [request.user.id]);
+    if (!current.rowCount) return reply.code(401).send({ error: "Account not found" });
+    if (!verifyPassword(input.currentPassword, current.rows[0].password_hash)) {
+      return reply.code(400).send({ error: "Current password is incorrect" });
+    }
+    const token = bearerToken(request);
+    await pool.query(
+      "UPDATE users SET password_hash = $1, updated_at = now() WHERE id = $2",
+      [hashPassword(input.newPassword), request.user.id],
+    );
+    await pool.query(
+      "DELETE FROM sessions WHERE user_id = $1 AND token_hash <> $2",
+      [request.user.id, sessionTokenHash(token)],
+    );
+    return reply.code(204).send();
+  });
+
+  app.get("/api/users", { preHandler: adminOnly }, async () =>
+    (await pool.query(
+      "SELECT id, username, display_name, role, active, created_at FROM users ORDER BY lower(username), id",
+    )).rows.map(publicUser));
+
+  app.post("/api/users", { preHandler: adminOnly }, async (request, reply) => {
+    const input = userInput(request.body);
+    const result = await pool.query(
+      `INSERT INTO users (username, display_name, password_hash, role)
+       VALUES ($1,$2,$3,$4)
+       RETURNING id, username, display_name, role, active, created_at`,
+      [input.username, input.displayName, hashPassword(input.password), input.role],
+    );
+    return reply.code(201).send(publicUser(result.rows[0]));
+  });
+
+  app.put("/api/users/:id", { preHandler: adminOnly }, async (request, reply) => {
+    const id = pathId(request.params.id);
+    const input = userUpdateInput(request.body);
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      const current = await client.query("SELECT role, active FROM users WHERE id = $1 FOR UPDATE", [id]);
+      if (!current.rowCount) {
+        await client.query("ROLLBACK");
+        return replyNotFound(reply);
+      }
+      const existing = current.rows[0];
+      if (id === request.user.id && (input.active === false || (input.role && input.role !== "admin"))) {
+        await client.query("ROLLBACK");
+        return reply.code(400).send({ error: "You cannot deactivate or demote your own account" });
+      }
+      if (existing.role === "admin" && existing.active && (input.role === "technician" || input.active === false)) {
+        const remaining = await client.query(
+          "SELECT COUNT(*)::integer count FROM users WHERE role = 'admin' AND active = true AND id <> $1",
+          [id],
+        );
+        if (Number(remaining.rows[0]?.count || 0) === 0) {
+          await client.query("ROLLBACK");
+          return reply.code(400).send({ error: "At least one active administrator is required" });
+        }
+      }
+      const fields = [];
+      const values = [];
+      const push = (column, value) => {
+        values.push(value);
+        fields.push(`${column} = $${values.length}`);
+      };
+      if (input.displayName !== undefined) push("display_name", input.displayName);
+      if (input.role !== undefined) push("role", input.role);
+      if (input.active !== undefined) push("active", input.active);
+      if (input.password !== undefined) push("password_hash", hashPassword(input.password));
+      if (fields.length) {
+        values.push(id);
+        await client.query(
+          `UPDATE users SET ${fields.join(", ")}, updated_at = now() WHERE id = $${values.length}`,
+          values,
+        );
+      }
+      await client.query("COMMIT");
+      return reply.code(204).send();
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  });
+
+  app.delete("/api/users/:id", { preHandler: adminOnly }, async (request, reply) => {
+    const id = pathId(request.params.id);
+    if (id === request.user.id) {
+      return reply.code(400).send({ error: "You cannot delete your own account" });
+    }
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      const current = await client.query("SELECT role, active FROM users WHERE id = $1 FOR UPDATE", [id]);
+      if (!current.rowCount) {
+        await client.query("ROLLBACK");
+        return replyNotFound(reply);
+      }
+      if (current.rows[0].role === "admin" && current.rows[0].active) {
+        const remaining = await client.query(
+          "SELECT COUNT(*)::integer count FROM users WHERE role = 'admin' AND active = true AND id <> $1",
+          [id],
+        );
+        if (Number(remaining.rows[0]?.count || 0) === 0) {
+          await client.query("ROLLBACK");
+          return reply.code(400).send({ error: "At least one active administrator is required" });
+        }
+      }
+      await client.query("DELETE FROM users WHERE id = $1", [id]);
+      await client.query("COMMIT");
+      return reply.code(204).send();
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  });
+
 
   app.get("/api/customers", async (request) => {
     const search = typeof request.query?.search === "string" ? request.query.search.trim() : "";
@@ -577,10 +814,10 @@ export function buildApp({ pool, config, logger = true, migrateDatabase }) {
       await client.query("BEGIN");
       const temporary = `TMP-${crypto.randomUUID()}`;
       const result = await client.query(`INSERT INTO repairs
-        (repair_number,customer_id,status_id,equipment_id,device_type,brand,model,serial_number,imei,reported_fault,accessories,general_condition,estimated_value,internal_notes)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING id, EXTRACT(YEAR FROM opened_at)::integer opened_year`,
+        (repair_number,customer_id,status_id,equipment_id,device_type,brand,model,serial_number,imei,reported_fault,accessories,general_condition,estimated_value,internal_notes,created_by)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING id, EXTRACT(YEAR FROM opened_at)::integer opened_year`,
         [temporary,input.customer_id,input.status_id,input.equipment_id,input.device_type,input.brand,input.model,input.serial_number,input.imei,input.reported_fault,
-          input.accessories,input.general_condition,input.estimated_value,input.internal_notes]);
+          input.accessories,input.general_condition,input.estimated_value,input.internal_notes,request.user.id]);
       const { id, opened_year: openedYear } = result.rows[0];
       const repairNumber = `${openedYear}-${String(id).padStart(6, "0")}`;
       await client.query("UPDATE repairs SET repair_number=$1 WHERE id=$2", [repairNumber, id]);
@@ -653,7 +890,7 @@ export function buildApp({ pool, config, logger = true, migrateDatabase }) {
     return Object.fromEntries(Object.entries(settingKeys).map(([field, key]) => [field, values.get(key) || ""]));
   });
 
-  app.put("/api/settings/office", async (request, reply) => {
+  app.put("/api/settings/office", { preHandler: adminOnly }, async (request, reply) => {
     const settings = officeSettingsInput(request.body);
     const client = await pool.connect();
     try {
@@ -672,7 +909,7 @@ export function buildApp({ pool, config, logger = true, migrateDatabase }) {
     }
   });
 
-  app.get("/api/backups/database", async (_request, reply) => {
+  app.get("/api/backups/database", { preHandler: adminOnly }, async (_request, reply) => {
     const backup = await createPostgresBackup(config.database);
     const stamp = new Date().toISOString().replace(/[:.]/g, "-");
     return reply
@@ -681,7 +918,7 @@ export function buildApp({ pool, config, logger = true, migrateDatabase }) {
       .send(backup);
   });
 
-  app.put("/api/backups/database", { bodyLimit: 256 * 1024 * 1024 }, async (request, reply) => {
+  app.put("/api/backups/database", { preHandler: adminOnly, bodyLimit: 256 * 1024 * 1024 }, async (request, reply) => {
     if (!isPostgresBackup(request.body)) return reply.code(400).send({ error: "Invalid PostgreSQL backup" });
     if (restoring) return reply.code(409).send({ error: "Another restore is already in progress" });
     restoring = true;
@@ -694,7 +931,7 @@ export function buildApp({ pool, config, logger = true, migrateDatabase }) {
     }
   });
 
-  app.get("/api/backups/portable", async (_request, reply) => {
+  app.get("/api/backups/portable", { preHandler: adminOnly }, async (_request, reply) => {
     const archive = await exportPortableBackup(pool);
     const stamp = new Date().toISOString().replace(/[:.]/g, "-");
     return reply
@@ -703,7 +940,7 @@ export function buildApp({ pool, config, logger = true, migrateDatabase }) {
       .send(JSON.stringify(archive));
   });
 
-  app.put("/api/backups/portable", { bodyLimit: 256 * 1024 * 1024 }, async (request, reply) => {
+  app.put("/api/backups/portable", { preHandler: adminOnly, bodyLimit: 256 * 1024 * 1024 }, async (request, reply) => {
     if (restoring) return reply.code(409).send({ error: "Another restore is already in progress" });
     restoring = true;
     try {

@@ -645,9 +645,11 @@ dependencies = [
 name = "dbrepairs"
 version = "0.2.3"
 dependencies = [
+ "hmac",
  "rusqlite",
  "serde",
  "serde_json",
+ "sha2",
  "tauri",
  "tauri-build",
  "tauri-plugin-sql",

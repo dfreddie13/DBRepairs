@@ -1,4 +1,8 @@
 import { useEffect, useState } from "react";
+import { useAuth } from "./auth/AuthProvider";
+import AccountMenu from "./components/AccountMenu";
+import LoginScreen from "./components/LoginScreen";
+import ThemeSelect from "./components/ThemeSelect";
 import CustomersPage from "./pages/CustomersPage";
 import EquipmentPage from "./pages/EquipmentPage";
 import LanguageDropdown from "./components/LanguageDropdown";
@@ -23,6 +27,7 @@ const emptyStats: DashboardStats = {
 
 export default function App() {
   const { t, locale, setLocale, locales } = useI18n();
+  const { loading: authLoading, user } = useAuth();
   const [page, setPage] = useState<Page>("dashboard");
   const [dashboardStats, setDashboardStats] = useState<DashboardStats>(emptyStats);
   const [recentRepairs, setRecentRepairs] = useState<DashboardRecentRepair[]>([]);
@@ -75,6 +80,14 @@ export default function App() {
   const deviceLabel = (repair: DashboardRecentRepair) =>
     [repair.device_type, repair.brand, repair.model].filter(Boolean).join(" · ") || "—";
 
+  if (authLoading) {
+    return <div className="auth-shell"><div className="auth-loading">{t("common.loading")}</div></div>;
+  }
+
+  if (!user) return <LoginScreen />;
+
+  const isAdmin = user.role === "admin";
+
   return (
     <div className="app-shell">
       <aside className="sidebar">
@@ -87,9 +100,13 @@ export default function App() {
           <button className={page === "repairs" ? "active" : ""} onClick={() => setPage("repairs")}>{t("nav.repairs")}</button>
           <button className={page === "equipment" ? "active" : ""} onClick={() => setPage("equipment")}>{t("nav.equipment")}</button>
           <button className={page === "customers" ? "active" : ""} onClick={() => setPage("customers")}>{t("nav.customers")}</button>
-          <button className={page === "settings" ? "active" : ""} onClick={() => setPage("settings")}>{t("nav.settings")}</button>
+          {isAdmin && <button className={page === "settings" ? "active" : ""} onClick={() => setPage("settings")}>{t("nav.settings")}</button>}
         </nav>
-        <div className="sidebar-language">{languageControl}</div>
+        <div className="sidebar-footer">
+          <ThemeSelect compact />
+          <div className="sidebar-language">{languageControl}</div>
+          <AccountMenu />
+        </div>
       </aside>
 
       <main>
@@ -158,7 +175,7 @@ export default function App() {
 
         {page === "equipment" && <EquipmentPage />}
 
-        {page === "settings" && <SettingsPage />}
+        {page === "settings" && isAdmin && <SettingsPage />}
       </main>
     </div>
   );

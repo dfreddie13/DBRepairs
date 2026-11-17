@@ -86,6 +86,93 @@ export function equipmentInput(value) {
   };
 }
 
+function secret(value, field, { required = false } = {}) {
+  if (value == null) value = "";
+  if (typeof value !== "string") throw new ValidationError(`${field} must be text`);
+  if (required && !value) throw new ValidationError(`${field} is required`);
+  if (value.length > 200) throw new ValidationError(`${field} is too long`);
+  return value;
+}
+
+function password(value, field = "password") {
+  if (typeof value !== "string") throw new ValidationError(`${field} must be text`);
+  if (value.length < 8) throw new ValidationError(`${field} must be at least 8 characters`);
+  if (value.length > 200) throw new ValidationError(`${field} is too long`);
+  return value;
+}
+
+function role(value) {
+  const parsed = text(value, "role", { max: 20 }) || "technician";
+  if (!["admin", "technician"].includes(parsed)) {
+    throw new ValidationError("role must be admin or technician");
+  }
+  return parsed;
+}
+
+function username(value) {
+  const parsed = text(value, "username", { required: true, max: 32 });
+  if (!/^[a-zA-Z0-9._-]{3,32}$/.test(parsed)) {
+    throw new ValidationError("username must be 3-32 letters, numbers, dots, dashes or underscores");
+  }
+  return parsed;
+}
+
+export function userInput(value, { passwordRequired = true } = {}) {
+  const body = object(value);
+  const displayName = text(body.displayName, "displayName", { required: true, max: 80 });
+  let userPassword = null;
+  if (passwordRequired || (body.password != null && body.password !== "")) {
+    userPassword = password(body.password);
+  }
+  return {
+    username: username(body.username),
+    displayName,
+    role: role(body.role),
+    password: userPassword,
+  };
+}
+
+export function userUpdateInput(value) {
+  const body = object(value);
+  const result = {};
+  if (body.displayName !== undefined) {
+    result.displayName = text(body.displayName, "displayName", { required: true, max: 80 });
+  }
+  if (body.role !== undefined) result.role = role(body.role);
+  if (body.active !== undefined) {
+    result.active = body.active === true || body.active === 1 || body.active === "1";
+  }
+  if (body.password !== undefined && body.password !== null && body.password !== "") {
+    result.password = password(body.password);
+  }
+  return result;
+}
+
+export function loginInput(value) {
+  const body = object(value);
+  return {
+    username: username(body.username),
+    password: secret(body.password, "password", { required: true }),
+  };
+}
+
+export function setupInput(value) {
+  const body = object(value);
+  return {
+    username: username(body.username),
+    displayName: text(body.displayName, "displayName", { required: true, max: 80 }),
+    password: password(body.password),
+  };
+}
+
+export function changePasswordInput(value) {
+  const body = object(value);
+  return {
+    currentPassword: secret(body.currentPassword, "currentPassword", { required: true }),
+    newPassword: password(body.newPassword, "newPassword"),
+  };
+}
+
 const officeFields = ["companyName", "taxNumber", "address", "phone", "email", "logoDataUrl"];
 
 export function officeSettingsInput(value) {

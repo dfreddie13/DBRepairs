@@ -1,4 +1,6 @@
 use std::{fs, path::Path, time::{SystemTime, UNIX_EPOCH}};
+use hmac::{Hmac, Mac};
+use sha2::Sha256;
 use tauri::Manager;
 use tauri_plugin_sql::{Migration, MigrationKind};
 use rusqlite::{params, Connection};
@@ -18,6 +20,120 @@ fn apply_pending_restore(app: &tauri::AppHandle) -> Result<(), String> {
     if db.exists(){fs::rename(&db,&rollback).map_err(|e|e.to_string())?;}
     if let Err(e)=fs::rename(&pending,&db){if rollback.exists()&&!db.exists(){let _=fs::rename(&rollback,&db);}return Err(e.to_string());}
     let _=remove_if_exists(&dir.join("dbrepairs.db-wal")); let _=remove_if_exists(&dir.join("dbrepairs.db-shm")); let _=remove_if_exists(&rollback); Ok(())
+}
+
+const PASSWORD_HASH_PREFIX: &str = "pbkdf2-sha256";
+const PASSWORD_ITERATIONS: u32 = 210_000;
+const PASSWORD_KEY_LENGTH: usize = 32;
+
+fn to_hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn from_hex(value: &str) -> Result<Vec<u8>, String> {
+    if value.len() % 2 != 0 {
+        return Err("Invalid hex value".into());
+    }
+    (0..value.len())
+        .step_by(2)
+        .map(|index| {
+            u8::from_str_radix(&value[index..index + 2], 16)
+                .map_err(|_| "Invalid hex value".to_string())
+        })
+        .collect()
+}
+
+fn pbkdf2_sha256(password: &[u8], salt: &[u8], iterations: u32, length: usize) -> Vec<u8> {
+    let mut result = Vec::with_capacity(length);
+    let mut block: u32 = 1;
+    while result.len() < length {
+        let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(password)
+            .expect("HMAC accepts keys of any length");
+        mac.update(salt);
+        mac.update(&block.to_be_bytes());
+        let mut u = [0u8; PASSWORD_KEY_LENGTH];
+        u.copy_from_slice(&mac.finalize().into_bytes());
+        let mut block_hash = u;
+        for _ in 1..iterations {
+            let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(password)
+                .expect("HMAC accepts keys of any length");
+            mac.update(&u);
+            u.copy_from_slice(&mac.finalize().into_bytes());
+            for index in 0..PASSWORD_KEY_LENGTH {
+                block_hash[index] ^= u[index];
+            }
+        }
+        result.extend_from_slice(&block_hash);
+        block += 1;
+    }
+    result.truncate(length);
+    result
+}
+
+fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
+    if left.len() != right.len() {
+        return false;
+    }
+    let mut difference = 0u8;
+    for (a, b) in left.iter().zip(right.iter()) {
+        difference |= a ^ b;
+    }
+    difference == 0
+}
+
+fn password_hash(password: &str, salt: &str) -> Result<String, String> {
+    let salt_bytes = from_hex(salt)?;
+    if salt_bytes.len() < 8 {
+        return Err("Salt is too short".into());
+    }
+    let hash = pbkdf2_sha256(
+        password.as_bytes(),
+        &salt_bytes,
+        PASSWORD_ITERATIONS,
+        PASSWORD_KEY_LENGTH,
+    );
+    Ok(format!(
+        "{PASSWORD_HASH_PREFIX}${PASSWORD_ITERATIONS}${}${}",
+        to_hex(&salt_bytes),
+        to_hex(&hash)
+    ))
+}
+
+fn password_matches(password: &str, stored: &str) -> Result<bool, String> {
+    let mut parts = stored.split('$');
+    if parts.next() != Some(PASSWORD_HASH_PREFIX) {
+        return Ok(false);
+    }
+    let iterations: u32 = match parts.next().and_then(|value| value.parse().ok()) {
+        Some(value) => value,
+        None => return Ok(false),
+    };
+    if !(10_000..=1_000_000).contains(&iterations) {
+        return Ok(false);
+    }
+    let salt = match parts.next().map(from_hex) {
+        Some(Ok(value)) if !value.is_empty() => value,
+        _ => return Ok(false),
+    };
+    let expected = match parts.next().map(from_hex) {
+        Some(Ok(value)) if !value.is_empty() => value,
+        _ => return Ok(false),
+    };
+    if parts.next().is_some() {
+        return Ok(false);
+    }
+    let actual = pbkdf2_sha256(password.as_bytes(), &salt, iterations, expected.len());
+    Ok(constant_time_eq(&actual, &expected))
+}
+
+#[tauri::command]
+fn auth_hash_password(password: String, salt: String) -> Result<String, String> {
+    password_hash(&password, &salt)
+}
+
+#[tauri::command]
+fn auth_verify_password(password: String, hash: String) -> Result<bool, String> {
+    password_matches(&password, &hash)
 }
 
 #[tauri::command]
@@ -276,7 +392,10 @@ mod tests {
         connection.execute_batch(include_str!("../migrations/0002_customer_attachments.sql")).unwrap();
         connection.execute_batch(include_str!("../migrations/0003_repair_attachments.sql")).unwrap();
         connection.execute_batch(include_str!("../migrations/0004_equipment.sql")).unwrap();
+        connection.execute_batch(include_str!("../migrations/0005_auth.sql")).unwrap();
         connection.execute("INSERT INTO customers (name) VALUES ('Old data')", []).unwrap();
+        connection.execute("INSERT INTO users (username,display_name,password_hash,role) VALUES ('admin','Admin','hash','admin')", []).unwrap();
+        connection.execute("INSERT INTO sessions (token,user_id,expires_at) VALUES ('token',1,'2099-01-01 00:00:00')", []).unwrap();
         let archive = PortableArchive { format:"dbrepairs-portable".into(), version:1, data:PortableData {
             settings:vec![PortableSetting{key:"office.companyName".into(),value:"RepairsLab".into()}],
             statuses:vec![PortableStatus{id:4,code:"RECEIVED".into(),label_key:"status.received".into(),sort_order:10,active:true}],
@@ -291,6 +410,20 @@ mod tests {
         assert_eq!(connection.query_row("SELECT name FROM customers", [], |row| row.get::<_,String>(0)).unwrap(), "Portable customer");
         connection.execute("INSERT INTO customers (name) VALUES ('Next')", []).unwrap();
         assert_eq!(connection.query_row("SELECT MAX(id) FROM customers", [], |row| row.get::<_,i64>(0)).unwrap(), 8);
+        assert_eq!(connection.query_row("SELECT COUNT(*) FROM users", [], |row| row.get::<_,i64>(0)).unwrap(), 1);
+        assert_eq!(connection.query_row("SELECT COUNT(*) FROM sessions", [], |row| row.get::<_,i64>(0)).unwrap(), 1);
+    }
+
+    #[test]
+    fn password_hashing_matches_known_vector_and_verifies() {
+        assert_eq!(
+            to_hex(&pbkdf2_sha256(b"password", b"salt", 1, 32)),
+            "120fb6cffcf8b32c43e7225256c4f837a86548c92ccc35480805987cb70be17b"
+        );
+        let hash = password_hash("workshop-pass", "00112233445566778899aabbccddeeff").unwrap();
+        assert!(password_matches("workshop-pass", &hash).unwrap());
+        assert!(!password_matches("wrong-pass", &hash).unwrap());
+        assert!(!password_matches("workshop-pass", "not-a-hash").unwrap());
     }
 }
 
@@ -321,6 +454,12 @@ pub fn run() {
             sql: include_str!("../migrations/0004_equipment.sql"),
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 5,
+            description: "auth",
+            sql: include_str!("../migrations/0005_auth.sql"),
+            kind: MigrationKind::Up,
+        },
     ];
 
     tauri::Builder::default()
@@ -334,7 +473,9 @@ pub fn run() {
             restore_database,
             export_text_file,
             export_binary_file,
-            restore_portable_database
+            restore_portable_database,
+            auth_hash_password,
+            auth_verify_password
         ])
         .setup(|app| {
             apply_pending_restore(app.handle()).map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;

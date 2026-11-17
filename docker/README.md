@@ -12,9 +12,20 @@ The server edition uses the existing React interface with a central API and Post
    docker compose up -d --build
    ```
 
-4. Open `http://SERVER-IP:8080` from the counter and office computers.
+4. Open `http://SERVER-IP:8080` from the counter and office computers. The first visit asks you to create the administrator account.
 
-Only the web port is published. PostgreSQL and the API remain on the private Docker network. Do not expose the application directly to the Internet: this first LAN release does not include user authentication. Use a VPN or an authenticated reverse proxy before enabling remote access.
+Only the web port is published. PostgreSQL and the API remain on the private Docker network. Keep the application on the workshop LAN. For remote access, use a VPN or an authenticated reverse proxy with HTTPS; the built-in login is not a substitute for securing an Internet-facing server.
+
+## Users and authentication
+
+The server edition is multi-user. On the first visit, create the administrator account with a display name, username and a password of at least 8 characters. The username accepts 3-32 letters, numbers, dots, dashes or underscores.
+
+- **Administrator** — manages users, office settings and backups, and can use the full workshop workflow.
+- **Technician** — uses customers, equipment and repairs; cannot open Settings or manage users.
+
+Administrators add the workshop staff from **Settings → Users**, where they can also reset passwords, change roles or deactivate and delete accounts. The last active administrator cannot be removed or demoted, and no one can demote or delete their own account.
+
+Every user can change their own password and sign out from the account menu at the bottom of the sidebar. Sessions last 30 days. Passwords are stored as PBKDF2-SHA256 hashes with per-user salts, and session tokens are stored hashed in PostgreSQL.
 
 ## Portainer
 
@@ -65,7 +76,9 @@ The `backup` service creates a PostgreSQL custom-format dump immediately after t
 
 A manual dump can also be downloaded from **Settings → Create backup** in the web interface. Keep an additional copy outside the Docker host.
 
-The web interface can restore these `.dump` files with **Settings → Restore backup**. Before replacing the database, the browser automatically downloads a safety backup of the current data. Restore runs in one PostgreSQL transaction: if any step fails, the existing database is left unchanged. Do not close the page while the restore is running.
+Native backups contain the complete database, including user accounts, password hashes and active sessions. Treat the dump files as sensitive. Portable `.dbrepairs` backups intentionally exclude accounts and credentials.
+
+The web interface can restore these `.dump` files with **Settings → Restore backup**. Before replacing the database, the browser automatically downloads a safety backup of the current data. Restore runs in one PostgreSQL transaction: if any step fails, the existing database is left unchanged. Do not close the page while the restore is running. After restoring a native dump, the user accounts and sessions from that dump become active again.
 
 ### Portable SQLite/PostgreSQL backups
 
@@ -76,7 +89,7 @@ Desktop SQLite → Server PostgreSQL
 Server PostgreSQL → Desktop SQLite
 ```
 
-It includes company settings and logo, repair statuses, customers, equipment, repairs, complete status history and attachments. Older portable backups remain compatible. Restoring replaces all current application data after automatically creating a native safety backup. The archive is validated before replacement and imported in one database transaction.
+It includes company settings and logo, repair statuses, customers, equipment, repairs, complete status history and attachments. Older portable backups remain compatible. Restoring replaces all current application data after automatically creating a native safety backup. The archive is validated before replacement and imported in one database transaction. User accounts, passwords and sessions are not part of the archive and are never overwritten.
 
 Use native backups for disaster recovery of the same database engine. Use portable backups to move or clone DBRepairs data between desktop and server editions.
 

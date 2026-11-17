@@ -1,6 +1,7 @@
 import { getDatabase } from "./database";
 import { api } from "./api";
 import { isServerMode } from "./runtime";
+import { currentUser } from "./auth";
 
 export type RepairStatus = { id: number; code: string; label_key: string; sort_order: number };
 export type Repair = {
@@ -9,6 +10,7 @@ export type Repair = {
   device_type: string | null; brand: string | null; model: string | null; serial_number: string | null; imei: string | null;
   reported_fault: string | null; accessories: string | null; general_condition: string | null; diagnosis: string | null; work_performed: string | null;
   estimated_value: number | null; final_value: number | null; internal_notes: string | null; opened_at: string; closed_at: string | null;
+  created_by: number | null; created_by_name: string | null;
 };
 
 export type RepairInput = {
@@ -40,18 +42,24 @@ export async function listStatuses(): Promise<RepairStatus[]> {
 export async function listRepairs(): Promise<Repair[]> {
   if (isServerMode) return api("/repairs");
   const db = await getDatabase();
-  return db.select(`SELECT r.*, c.name customer_name, s.code status_code, s.label_key status_label_key
-    FROM repairs r JOIN customers c ON c.id=r.customer_id JOIN repair_statuses s ON s.id=r.status_id
+  return db.select(`SELECT r.*, c.name customer_name, s.code status_code, s.label_key status_label_key,
+      u.display_name created_by_name
+    FROM repairs r
+    JOIN customers c ON c.id=r.customer_id
+    JOIN repair_statuses s ON s.id=r.status_id
+    LEFT JOIN users u ON u.id=r.created_by
     ORDER BY r.id DESC`);
 }
 
 export async function listRepairsByCustomer(customerId: number): Promise<Repair[]> {
   if (isServerMode) return api(`/repairs?customerId=${customerId}`);
   const db = await getDatabase();
-  return db.select(`SELECT r.*, c.name customer_name, s.code status_code, s.label_key status_label_key
+  return db.select(`SELECT r.*, c.name customer_name, s.code status_code, s.label_key status_label_key,
+      u.display_name created_by_name
     FROM repairs r
     JOIN customers c ON c.id=r.customer_id
     JOIN repair_statuses s ON s.id=r.status_id
+    LEFT JOIN users u ON u.id=r.created_by
     WHERE r.customer_id=?
     ORDER BY r.id DESC`, [customerId]);
 }
@@ -59,10 +67,12 @@ export async function listRepairsByCustomer(customerId: number): Promise<Repair[
 export async function listRepairsByEquipment(equipmentId: number): Promise<Repair[]> {
   if (isServerMode) return api(`/repairs?equipmentId=${equipmentId}`);
   const db = await getDatabase();
-  return db.select(`SELECT r.*, c.name customer_name, s.code status_code, s.label_key status_label_key
+  return db.select(`SELECT r.*, c.name customer_name, s.code status_code, s.label_key status_label_key,
+      u.display_name created_by_name
     FROM repairs r
     JOIN customers c ON c.id=r.customer_id
     JOIN repair_statuses s ON s.id=r.status_id
+    LEFT JOIN users u ON u.id=r.created_by
     WHERE r.equipment_id=?
     ORDER BY r.id DESC`, [equipmentId]);
 }
@@ -73,8 +83,12 @@ export async function getRepair(id: number): Promise<Repair | null> {
     catch (error) { if (error instanceof Error && error.message === "Not found") return null; throw error; }
   }
   const db = await getDatabase();
-  const rows = await db.select<Repair[]>(`SELECT r.*, c.name customer_name, s.code status_code, s.label_key status_label_key
-    FROM repairs r JOIN customers c ON c.id=r.customer_id JOIN repair_statuses s ON s.id=r.status_id
+  const rows = await db.select<Repair[]>(`SELECT r.*, c.name customer_name, s.code status_code, s.label_key status_label_key,
+      u.display_name created_by_name
+    FROM repairs r
+    JOIN customers c ON c.id=r.customer_id
+    JOIN repair_statuses s ON s.id=r.status_id
+    LEFT JOIN users u ON u.id=r.created_by
     WHERE r.id=? LIMIT 1`, [id]);
   return rows[0] ?? null;
 }
@@ -98,10 +112,11 @@ export async function createRepair(input: RepairInput): Promise<number> {
     return result.id;
   }
   const db = await getDatabase();
+  const user = await currentUser();
   const temp = `TMP-${Date.now()}`;
   const result = await db.execute(`INSERT INTO repairs
-    (repair_number,customer_id,status_id,equipment_id,device_type,brand,model,serial_number,imei,reported_fault,accessories,general_condition,estimated_value,internal_notes)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, [temp,input.customer_id,input.status_id,input.equipment_id,input.device_type||null,input.brand||null,input.model||null,input.serial_number||null,input.imei||null,input.reported_fault||null,input.accessories||null,input.general_condition||null,input.estimated_value?Number(input.estimated_value):null,input.internal_notes||null]);
+    (repair_number,customer_id,status_id,equipment_id,device_type,brand,model,serial_number,imei,reported_fault,accessories,general_condition,estimated_value,internal_notes,created_by)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, [temp,input.customer_id,input.status_id,input.equipment_id,input.device_type||null,input.brand||null,input.model||null,input.serial_number||null,input.imei||null,input.reported_fault||null,input.accessories||null,input.general_condition||null,input.estimated_value?Number(input.estimated_value):null,input.internal_notes||null,user?.id??null]);
   const id = Number(result.lastInsertId);
   await db.execute("UPDATE repairs SET repair_number=? WHERE id=?", [repairNumber(id), id]);
   await db.execute("INSERT INTO repair_status_history (repair_id,status_id) VALUES (?,?)", [id,input.status_id]);

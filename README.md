@@ -59,6 +59,22 @@ Every status change is stored with date and time. An optional note can be added 
 - Company identity and custom logo.
 - Save a repair and immediately open the print preview.
 
+### Users and authentication
+
+- Login is required in both the desktop and server editions.
+- The first launch creates the administrator account.
+- Two roles: **administrator** and **technician**.
+- Administrators create, edit, deactivate and delete users, and reset passwords from Settings.
+- Every user can change their own password and sign out.
+- Repairs keep the account that created them.
+- Sessions last 30 days and are stored securely hashed on the server.
+
+### Appearance
+
+- Selectable light, dark or system theme.
+- Available from the login screen, the sidebar and Settings.
+- The preference is stored per browser or desktop profile.
+
 ### Dashboard
 
 Live overview with:
@@ -73,6 +89,8 @@ Live overview with:
 
 - Global application language.
 - Portuguese (Portugal), English, Spanish, French and Romanian.
+- Light, dark or system theme.
+- User accounts, roles, passwords and activation.
 - Company name, tax number, address, phone, email and logo.
 - Manual SQLite database backup.
 - CSV export for customers.
@@ -82,6 +100,7 @@ Live overview with:
 
 - One central PostgreSQL database for simultaneous use from multiple computers.
 - Browser interface reusing the desktop workflow and translations.
+- Multi-user login with administrator and technician roles.
 - Transactional HTTP API and automatic schema migrations.
 - Docker Compose stack for a server or Portainer.
 - Manual and scheduled PostgreSQL backups with configurable retention.
@@ -141,7 +160,7 @@ Copy `.env.example` to `.env`, set a strong `POSTGRES_PASSWORD`, then run:
 docker compose up -d --build
 ```
 
-Open `http://SERVER-IP:8080`. See `docker/README.md` for Portainer, backup, restore and update instructions.
+Open `http://SERVER-IP:8080`. On the first visit, create the administrator account, then add the workshop staff from **Settings → Users**. See `docker/README.md` for authentication, Portainer, backup, restore and update instructions.
 
 ## Data location
 
@@ -150,6 +169,8 @@ The desktop edition uses a local SQLite database. Application data is stored in 
 Use the built-in backup function before moving or reinstalling systems.
 
 The server edition stores shared data in its PostgreSQL Docker volume. Desktop and server data remain independent until a portable `.dbrepairs` backup is explicitly restored. This format transfers settings, statuses, customers, equipment, repairs, status history and attachments in either direction between SQLite and PostgreSQL. Older portable backups remain compatible.
+
+Native database backups include user accounts, password hashes and active sessions. Portable `.dbrepairs` backups intentionally exclude accounts and credentials, so restores never overwrite the users of the destination installation. Keep native backups private.
 
 ## Translation
 

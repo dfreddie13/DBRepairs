@@ -1,6 +1,8 @@
 import { ChangeEvent, FormEvent, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import LanguageDropdown from "../components/LanguageDropdown";
+import ThemeSelect from "../components/ThemeSelect";
+import UsersPanel from "../components/UsersPanel";
 import { defaultOfficeSettings, getOfficeSettings, OfficeSettings, saveOfficeSettings } from "../data/settings";
 import { getDatabase } from "../data/database";
 import { listCustomers } from "../data/customers";
@@ -176,6 +178,11 @@ export default function SettingsPage(){
         <div className="settings-field"><LanguageDropdown locale={locale} setLocale={setLocale} locales={locales} label={t("settings.language")} searchLabel={t("settings.searchLanguage")}/></div>
       </section>
       <section className="panel settings-panel">
+        <h2>{t("theme.title")}</h2>
+        <p>{t("theme.hint")}</p>
+        <div className="settings-field"><ThemeSelect/></div>
+      </section>
+      <section className="panel settings-panel">
         <div className="panel-head">
           <div><h2>{t("settings.backup")}</h2><p>{t("settings.backupHint")}</p></div>
           <div className="export-actions">
@@ -237,5 +244,6 @@ export default function SettingsPage(){
         <div className="settings-actions"><button className="primary" disabled={saving}>{saving?t("common.saving"):t("common.save")}</button></div>
       </section>
     </form>
+    <div className="settings-stack"><UsersPanel/></div>
   </>;
 }

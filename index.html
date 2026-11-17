@@ -6,6 +6,19 @@
     <meta name="theme-color" content="#111827" />
     <link rel="icon" type="image/png" href="/dbrepairs-icon-square.png" />
     <title>DBRepairs</title>
+    <script>
+      (function () {
+        try {
+          var preference = localStorage.getItem("dbrepairs.theme") || "system";
+          var dark = preference === "dark" || (preference === "system" &&
+            window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches);
+          document.documentElement.dataset.theme = dark ? "dark" : "light";
+          document.documentElement.style.colorScheme = dark ? "dark" : "light";
+        } catch (error) {
+          document.documentElement.dataset.theme = "light";
+        }
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>
