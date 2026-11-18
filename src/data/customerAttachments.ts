@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { getDatabase } from "./database";
 import { isServerMode } from "./runtime";
+import { authFetch } from "./api";
 
 export type CustomerAttachment = {
   id: number;
@@ -87,7 +88,7 @@ export async function listCustomerAttachments(
   customerId: number,
 ): Promise<CustomerAttachment[]> {
   if (isServerMode) {
-    const response = await fetch(`/api/customers/${customerId}/attachments`);
+    const response = await authFetch(`/api/customers/${customerId}/attachments`);
 
     if (!response.ok) {
       throw new Error(await responseError(response));
@@ -123,7 +124,7 @@ export async function addCustomerAttachment(
   const contentType = file.type || "application/octet-stream";
 
   if (isServerMode) {
-    const response = await fetch(
+    const response = await authFetch(
       `/api/customers/${customerId}/attachments`,
       {
         method: "POST",
@@ -163,7 +164,7 @@ export async function downloadCustomerAttachment(
   attachment: CustomerAttachment,
 ): Promise<void> {
   if (isServerMode) {
-    const response = await fetch(
+    const response = await authFetch(
       `/api/customers/${attachment.customer_id}/attachments/${attachment.id}`,
     );
 
@@ -206,7 +207,7 @@ export async function deleteCustomerAttachment(
   attachment: CustomerAttachment,
 ): Promise<void> {
   if (isServerMode) {
-    const response = await fetch(
+    const response = await authFetch(
       `/api/customers/${attachment.customer_id}/attachments/${attachment.id}`,
       {
         method: "DELETE",

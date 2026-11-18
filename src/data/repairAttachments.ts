@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { getDatabase } from "./database";
 import { isServerMode } from "./runtime";
+import { authFetch } from "./api";
 
 export type RepairAttachment = {
   id: number;
@@ -99,7 +100,7 @@ export async function listRepairAttachments(
   repairId: number,
 ): Promise<RepairAttachment[]> {
   if (isServerMode) {
-    const response = await fetch(
+    const response = await authFetch(
       `/api/repairs/${repairId}/attachments`,
     );
 
@@ -140,7 +141,7 @@ export async function addRepairAttachment(
     file.type || "application/octet-stream";
 
   if (isServerMode) {
-    const response = await fetch(
+    const response = await authFetch(
       `/api/repairs/${repairId}/attachments`,
       {
         method: "POST",
@@ -189,7 +190,7 @@ export async function downloadRepairAttachment(
   attachment: RepairAttachment,
 ): Promise<void> {
   if (isServerMode) {
-    const response = await fetch(
+    const response = await authFetch(
       `/api/repairs/${attachment.repair_id}/attachments/${attachment.id}`,
     );
 
@@ -237,7 +238,7 @@ export async function deleteRepairAttachment(
   attachment: RepairAttachment,
 ): Promise<void> {
   if (isServerMode) {
-    const response = await fetch(
+    const response = await authFetch(
       `/api/repairs/${attachment.repair_id}/attachments/${attachment.id}`,
       {
         method: "DELETE",

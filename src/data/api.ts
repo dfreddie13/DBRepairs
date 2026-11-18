@@ -53,6 +53,14 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
   return response.json() as Promise<T>;
 }
 
+// fetch() that always sends the session token (used by the attachment modules).
+export async function authFetch(input: string, init: RequestInit = {}): Promise<Response> {
+  const headers = { ...authHeaders(), ...(init.headers as Record<string, string> | undefined) };
+  const response = await fetch(input, { ...init, headers });
+  if (response.status === 401) notifyUnauthorized();
+  return response;
+}
+
 export async function downloadApiFile(path: string): Promise<string> {
   const response = await fetch(`${apiRoot}${path}`, { headers: authHeaders() });
   if (!response.ok) {
